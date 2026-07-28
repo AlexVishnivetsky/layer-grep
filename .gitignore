@@ -1,0 +1,34 @@
+# Temporary dev-session working notes/status log - not part of the published project
+PROJECT_STATUS.md
+
+# Generated artifacts (per-project index DB + log) - not source, not portable between machines
+.layergrep/
+
+# This repo's own local MCP/dogfooding wiring - not something a clone of this repo should
+# inherit: .mcp.json has absolute, machine-specific paths (venv location) and an unrelated
+# personal MCP server entry; .layergrep.json is this project's own self-indexing config
+.mcp.json
+.layergrep.json
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# Virtual environment
+.venv/
+venv/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Claude Code - personal/local settings, not shared project config
+.claude/settings.local.json
