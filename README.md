@@ -37,12 +37,28 @@ differentiator.
    then per-`(layer, module)` vector search (top-k *within* each bucket, not
    overall — the reason results don't collapse into a single dominant
    category), then two structural expansion passes: the import graph
-   (handler → model/config/constants it imports) and shared string literals
-   across layers (the only non-embedding bridge between languages, e.g. a
-   route path used by both a JS frontend and a Python backend).
+   (handler → model/config/constants it imports — **Python only today**,
+   see [Language support](#language-support)) and shared string literals
+   across layers (language-agnostic, works everywhere — e.g. a route path
+   used by both a JS frontend and a Python backend).
 4. **Everything is project-specific and configurable**, not hardcoded —
    layer rules, translation file paths, module depth, and noise-filtering
    thresholds all live in `.layergrep.json` (see below).
+
+## Language support
+
+Not every feature is at parity across languages yet — chunking works
+everywhere; the import graph and `init-config`'s layer heuristics are
+Python/web-framework-shaped today.
+
+| Feature | Python | JavaScript/TypeScript | Rust |
+|---|---|---|---|
+| AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ |
+| Layer/module classification (path & name based) | ✅ | ✅ | ✅ |
+| Cross-layer literal linking | ✅ | ✅ | ✅ |
+| Import-graph expansion (`expand_via_imports`) | ✅ | Not implemented ([#8](https://github.com/AlexVishnivetsky/layer-grep/issues/8)) | Not implemented ([#8](https://github.com/AlexVishnivetsky/layer-grep/issues/8)) |
+| `init-config` layer heuristics (frontend/backend/models/...) | ✅ | ✅ | Not implemented ([#9](https://github.com/AlexVishnivetsky/layer-grep/issues/9)) — only `module_depth` is suggested, via Cargo.toml crate names |
+| `init-config` manifest-based module detection | – (directory-depth heuristic only) | – (directory-depth heuristic only) | ✅ (via Cargo.toml) |
 
 ## Install
 
