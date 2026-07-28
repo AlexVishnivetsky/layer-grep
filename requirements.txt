@@ -26,7 +26,7 @@ sqlite-vec==0.1.9
 
 # --- Support ---
 numpy==2.5.1
-tqdm==4.66.4                    # progress bar while indexing files
+tqdm==4.70.0                    # progress bar while indexing files
 
 # --- MCP wrapper (mcp_server.py) ---
 mcp[cli]==1.28.1
