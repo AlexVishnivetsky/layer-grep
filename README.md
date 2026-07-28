@@ -201,6 +201,19 @@ pytest              # full suite
 pytest -m "not slow"  # skip tests that load the real embedding model / spawn subprocesses
 ```
 
+Optional local git hooks (same ruff/mypy/bandit checks CI runs, catching issues before a
+commit instead of after a push):
+
+```bash
+pre-commit install                        # ruff/mypy/bandit before every commit
+pre-commit install --hook-type pre-push   # full (non-"slow") test suite before every push
+```
+
+They run via whatever's already installed in your activated dev venv (`language: system` in
+`.pre-commit-config.yaml`), not a separate managed environment — so a local run always
+matches a manual `ruff check .`/`mypy .`/`bandit ...` invocation exactly, with nothing to
+keep in sync.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
