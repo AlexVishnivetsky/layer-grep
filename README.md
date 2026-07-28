@@ -55,7 +55,7 @@ everywhere; the import graph is Python-only today.
 | AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ |
 | Layer/module classification (path & name based) | ✅ | ✅ | ✅ |
 | Cross-layer literal linking | ✅ | ✅ | ✅ |
-| Import-graph expansion (`expand_via_imports`) | ✅ | Not implemented ([#8](https://github.com/AlexVishnivetsky/layer-grep/issues/8)) | Not implemented ([#8](https://github.com/AlexVishnivetsky/layer-grep/issues/8)) |
+| Import-graph expansion (`expand_via_imports`) | ✅ | Not implemented ([#11](https://github.com/AlexVishnivetsky/layer-grep/issues/11)) | Not implemented ([#12](https://github.com/AlexVishnivetsky/layer-grep/issues/12)) |
 | `init-config` layer heuristics | ✅ (frontend/backend/models/...) | ✅ (frontend/backend/models/...) | ✅ (Cargo conventions: tests/examples/benches, Tauri commands, `[[bin]]` targets) |
 | `init-config` manifest-based module detection | – (directory-depth heuristic only) | – (directory-depth heuristic only) | ✅ (via Cargo.toml) |
 
