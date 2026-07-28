@@ -16,7 +16,7 @@ import model_config
 import project_config as pconfig
 from chunker import EXTENSION_LANGS, Chunk, chunk_file
 from db_schema import open_db
-from imports import extract_python_imports
+from imports import IMPORT_GRAPH_EXTENSIONS, extract_imports
 
 # Universal vendored/build directory names - true across ~any JS/Python/Rust project, not
 # tied to one repo's layout. Project-specific additions (e.g. a vendored "plugins" dir that
@@ -141,8 +141,8 @@ def index_project(conn: sqlite3.Connection, root: Path, model_name: str | None =
         all_chunks.extend(file_chunks)
 
         conn.execute("DELETE FROM imports WHERE source_file = ?", (key,))
-        if path.suffix.lower() == ".py":
-            for edge in extract_python_imports(path, project_root):
+        if path.suffix.lower() in IMPORT_GRAPH_EXTENSIONS:
+            for edge in extract_imports(path, project_root):
                 conn.execute(
                     "INSERT INTO imports (source_file, target_file, module) VALUES (?, ?, ?)",
                     (key, str(edge.target), edge.module),

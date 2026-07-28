@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from imports import extract_python_imports
+from imports import extract_imports, extract_js_imports, extract_python_imports
 
 
 def test_absolute_dotted_import(tmp_path, write_file):
@@ -84,3 +84,99 @@ def test_no_imports_yields_no_edges(tmp_path, write_file):
 def test_imports_version_is_int():
     import imports
     assert isinstance(imports.IMPORTS_VERSION, int)
+
+
+def test_js_default_import_resolves_with_inferred_extension(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "export function foo() {}\n")
+    src = write_file(tmp_path, "main.js", 'import foo from "./helpers";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.js"
+    assert edges[0].module == "./helpers"
+
+
+def test_js_named_import(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "export const a = 1;\n")
+    src = write_file(tmp_path, "main.js", 'import { a } from "./helpers";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.js"
+
+
+def test_js_namespace_import(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "export const a = 1;\n")
+    src = write_file(tmp_path, "main.js", 'import * as ns from "./helpers";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.js"
+
+
+def test_js_export_from_and_export_star(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "export const a = 1;\n")
+    src = write_file(tmp_path, "main.js", (
+        'export { a } from "./helpers";\n'
+        'export * from "./helpers";\n'
+    ))
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 2
+    assert all(e.target == tmp_path / "helpers.js" for e in edges)
+
+
+def test_js_require_call(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "module.exports = {};\n")
+    src = write_file(tmp_path, "main.js", 'const helpers = require("./helpers");\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.js"
+
+
+def test_ts_import_prefers_ts_extension_over_js(tmp_path, write_file):
+    # both a .ts and a .js file with the same stem exist - .ts wins (source over a
+    # possibly-compiled/vendored sibling), per _JS_EXTENSIONS_TO_TRY's order
+    write_file(tmp_path, "helpers.js", "export const a = 1;\n")
+    write_file(tmp_path, "helpers.ts", "export const a: number = 1;\n")
+    src = write_file(tmp_path, "main.ts", 'import { a } from "./helpers";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.ts"
+
+
+def test_js_import_resolves_to_directory_index(tmp_path, write_file):
+    write_file(tmp_path, "helpers/index.js", "export const a = 1;\n")
+    src = write_file(tmp_path, "main.js", 'import { a } from "./helpers";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers" / "index.js"
+
+
+def test_js_parent_relative_import(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "export const a = 1;\n")
+    src = write_file(tmp_path, "sub/main.js", 'import { a } from "../helpers";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.js"
+
+
+def test_js_bare_specifier_yields_no_edge(tmp_path, write_file):
+    # an external package (node_modules) - same treatment as an unresolvable Python import
+    src = write_file(tmp_path, "main.js", 'import react from "react";\n')
+    edges = extract_js_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_js_no_imports_yields_no_edges(tmp_path, write_file):
+    src = write_file(tmp_path, "main.js", "function foo() {}\n")
+    edges = extract_js_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_extract_imports_dispatches_by_extension(tmp_path, write_file):
+    write_file(tmp_path, "helpers.js", "export const a = 1;\n")
+    py_src = write_file(tmp_path, "main.py", "import totally_missing_package\n")
+    js_src = write_file(tmp_path, "main.js", 'import { a } from "./helpers";\n')
+    rs_src = write_file(tmp_path, "main.rs", "fn main() {}\n")
+
+    assert extract_imports(py_src, tmp_path) == []  # dispatched to the Python extractor
+    js_edges = extract_imports(js_src, tmp_path)
+    assert len(js_edges) == 1 and js_edges[0].target == tmp_path / "helpers.js"
+    assert extract_imports(rs_src, tmp_path) == []  # no extractor for .rs yet - not an error
