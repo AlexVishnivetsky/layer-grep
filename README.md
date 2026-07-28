@@ -37,26 +37,26 @@ differentiator.
    then per-`(layer, module)` vector search (top-k *within* each bucket, not
    overall — the reason results don't collapse into a single dominant
    category), then two structural expansion passes: the import graph
-   (handler → model/config/constants it imports — **Python and
-   JavaScript/TypeScript today, not yet Rust**, see
-   [Language support](#language-support)) and shared string literals
-   across layers (language-agnostic, works everywhere — e.g. a route path
-   used by both a JS frontend and a Python backend).
+   (handler → model/config/constants it imports — Python, JavaScript/
+   TypeScript, and Rust, see [Language support](#language-support)) and
+   shared string literals across layers (language-agnostic, works
+   everywhere — e.g. a route path used by both a JS frontend and a Python
+   backend).
 4. **Everything is project-specific and configurable**, not hardcoded —
    layer rules, translation file paths, module depth, and noise-filtering
    thresholds all live in `.layergrep.json` (see below).
 
 ## Language support
 
-Not every feature is at parity across languages yet — chunking works
-everywhere; the import graph doesn't cover Rust yet.
+Not every feature is at full parity across languages yet, but chunking and
+import-graph expansion now cover all three.
 
 | Feature | Python | JavaScript/TypeScript | Rust |
 |---|---|---|---|
 | AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ |
 | Layer/module classification (path & name based) | ✅ | ✅ | ✅ |
 | Cross-layer literal linking | ✅ | ✅ | ✅ |
-| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ (relative `import`/`export ... from`/`require`; bare specifiers like `react` are left unresolved, same as an external Python package) | Not implemented ([#12](https://github.com/AlexVishnivetsky/layer-grep/issues/12)) |
+| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ (relative `import`/`export ... from`/`require`; bare specifiers like `react` are left unresolved, same as an external Python package) | ✅ (real per-crate module tree from `mod` declarations, `crate::`/`self::`/`super::`, and cross-crate resolution by package name; doesn't cover `#[path = ...]`-relocated modules) |
 | `init-config` layer heuristics | ✅ (frontend/backend/models/...) | ✅ (frontend/backend/models/...) | ✅ (Cargo conventions: tests/examples/benches, Tauri commands, `[[bin]]` targets) |
 | `init-config` manifest-based module detection | – (directory-depth heuristic only) | – (directory-depth heuristic only) | ✅ (via Cargo.toml) |
 
