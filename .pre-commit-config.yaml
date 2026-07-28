@@ -1,0 +1,38 @@
+repos:
+  - repo: local
+    hooks:
+      # `language: system` (not a pre-commit-managed isolated env) deliberately - this
+      # reuses whatever ruff/mypy/bandit are already installed in the activated dev venv
+      # (pip install -e ".[dev]"), so a local run is guaranteed identical to CI/a manual
+      # `ruff check .`/`mypy .`/`bandit ...` invocation, with no separate version or
+      # additional_dependencies list to keep in sync.
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: mypy
+        entry: mypy .
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: bandit
+        name: bandit
+        entry: bandit -q -r . --exclude ./tests,./.venv
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # Full suite is ~90s (some tests load the real embedding model / spawn the MCP server
+      # subprocess) - too slow to run on every commit, so this only runs on `git push`
+      # (needs `pre-commit install --hook-type pre-push` in addition to the default
+      # `pre-commit install`, see README).
+      - id: pytest
+        name: pytest (not slow)
+        entry: pytest -m "not slow"
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

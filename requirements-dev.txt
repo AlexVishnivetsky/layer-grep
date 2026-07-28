@@ -8,3 +8,6 @@ ruff==0.16.0
 mypy==2.3.0
 bandit==1.9.4
 types-tqdm==4.69.0.20260728
+
+# --- Local git hooks ---
+pre-commit==4.6.1
