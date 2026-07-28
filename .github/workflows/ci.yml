@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install package + dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy .
+
+      - name: Security scan (bandit)
+        run: bandit -q -r . --exclude ./tests
+
+      # "slow" tests load the real embedding model or spawn the MCP server subprocess -
+      # excluded here to keep CI fast and independent of a model download; see README's
+      # own `pytest -m "not slow"` for the equivalent quick local run.
+      - name: Test (pytest)
+        run: pytest -m "not slow"

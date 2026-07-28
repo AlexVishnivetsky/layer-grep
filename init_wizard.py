@@ -201,7 +201,7 @@ def suggest_project_config(project_root: Path) -> dict:
                 continue
             translations_files.append(str(jf.relative_to(project_root)).replace("\\", "/"))
 
-    draft = {
+    draft: dict[str, object] = {
         "_generated_by": "layergrep init - REVIEW BEFORE USE, this is a draft, not a "
                           "verified config",
         "_detected_languages": detected_languages,

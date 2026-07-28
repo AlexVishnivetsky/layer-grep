@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.1.1"]
+dev = ["pytest==9.1.1", "ruff==0.16.0", "mypy==2.3.0", "bandit==1.9.4", "types-tqdm==4.69.0.20260728"]
 
 # Two entry points, matching cli.py/mcp_server.py's own two usage modes (see PROJECT_STATUS.md):
 # `layergrep` for direct human/script use, `layergrep-mcp-server` for .mcp.json's "command".
@@ -49,3 +49,10 @@ py-modules = [
     "imports", "indexer", "init_wizard", "json_index", "mcp_server", "model_config",
     "project_config", "retrieval", "search",
 ]
+
+# sqlite_vec ships no py.typed marker and no third-party stub package exists (unlike tqdm,
+# covered by types-tqdm above) - ignore-missing-imports scoped to just this one module
+# rather than project-wide, so a real missing-stub regression elsewhere still gets caught.
+[[tool.mypy.overrides]]
+module = "sqlite_vec"
+ignore_missing_imports = true
