@@ -71,6 +71,64 @@ def test_suggest_config_scan_excludes_venv_and_vendor_dirs(tmp_path, write_file)
     assert draft["layers"] == []
 
 
+def test_suggest_config_rust_conventional_dirs(tmp_path, write_file):
+    write_file(tmp_path, "Cargo.toml", '[package]\nname = "myapp"\n')
+    write_file(tmp_path, "src/lib.rs", "pub fn foo() {}\n")
+    write_file(tmp_path, "tests/integration.rs", "fn test_foo() {}\n")
+    write_file(tmp_path, "examples/demo.rs", "fn main() {}\n")
+    write_file(tmp_path, "benches/bench_foo.rs", "fn bench_foo() {}\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    layer_names = {l["name"] for l in draft["layers"]}
+    assert {"tests", "examples", "benches"} <= layer_names
+
+
+def test_suggest_config_rust_commands_convention(tmp_path, write_file):
+    write_file(tmp_path, "Cargo.toml", '[package]\nname = "myapp"\n')
+    write_file(tmp_path, "src-tauri/src/commands.rs", "fn do_thing() {}\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    by_name = {l["name"]: l for l in draft["layers"]}
+    assert "commands.rs" in by_name["commands"]["files"]
+
+
+def test_suggest_config_rust_bin_targets_become_layers(tmp_path, write_file):
+    write_file(tmp_path, "Cargo.toml", (
+        '[package]\n'
+        'name = "myapp"\n'
+        '\n'
+        '[[bin]]\n'
+        'name = "naming"\n'
+        'path = "src/naming.rs"\n'
+    ))
+    write_file(tmp_path, "src/naming.rs", "fn main() {}\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    by_name = {l["name"]: l for l in draft["layers"]}
+    assert "naming" in by_name
+    assert by_name["naming"]["files"] == ["naming.rs"]
+
+
+def test_suggest_config_rust_bin_target_default_path(tmp_path, write_file):
+    # a [[bin]] entry with no "path" falls back to Cargo's own src/bin/<name>.rs convention
+    write_file(tmp_path, "Cargo.toml", (
+        '[package]\n'
+        'name = "myapp"\n'
+        '\n'
+        '[[bin]]\n'
+        'name = "helper"\n'
+    ))
+    write_file(tmp_path, "src/bin/helper.rs", "fn main() {}\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    by_name = {l["name"]: l for l in draft["layers"]}
+    assert by_name["helper"]["files"] == ["helper.rs"]
+
+
+def test_suggest_config_rust_heuristics_skipped_without_rust(tmp_path, write_file):
+    # a Python project with a coincidental "tests" dir shouldn't get Rust-flavored layers
+    write_file(tmp_path, "tests/test_foo.py", "def test_foo(): pass\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    layer_names = {l["name"] for l in draft["layers"]}
+    assert "tests" not in layer_names
+
+
 def test_write_draft_config_writes_when_absent(tmp_path):
     draft = {"layers": [], "default_layer": "backend/other", "translations": {"files": []},
               "extra_excluded_dirs": []}

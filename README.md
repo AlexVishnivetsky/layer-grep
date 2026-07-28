@@ -48,8 +48,7 @@ differentiator.
 ## Language support
 
 Not every feature is at parity across languages yet — chunking works
-everywhere; the import graph and `init-config`'s layer heuristics are
-Python/web-framework-shaped today.
+everywhere; the import graph is Python-only today.
 
 | Feature | Python | JavaScript/TypeScript | Rust |
 |---|---|---|---|
@@ -57,7 +56,7 @@ Python/web-framework-shaped today.
 | Layer/module classification (path & name based) | ✅ | ✅ | ✅ |
 | Cross-layer literal linking | ✅ | ✅ | ✅ |
 | Import-graph expansion (`expand_via_imports`) | ✅ | Not implemented ([#8](https://github.com/AlexVishnivetsky/layer-grep/issues/8)) | Not implemented ([#8](https://github.com/AlexVishnivetsky/layer-grep/issues/8)) |
-| `init-config` layer heuristics (frontend/backend/models/...) | ✅ | ✅ | Not implemented ([#9](https://github.com/AlexVishnivetsky/layer-grep/issues/9)) — only `module_depth` is suggested, via Cargo.toml crate names |
+| `init-config` layer heuristics | ✅ (frontend/backend/models/...) | ✅ (frontend/backend/models/...) | ✅ (Cargo conventions: tests/examples/benches, Tauri commands, `[[bin]]` targets) |
 | `init-config` manifest-based module detection | – (directory-depth heuristic only) | – (directory-depth heuristic only) | ✅ (via Cargo.toml) |
 
 ## Install
@@ -182,7 +181,12 @@ present, and for Rust projects reads real crate names straight out of every
 `Cargo.toml` under the root (not the directory name — a directory called
 `libxdo-sys-stub` can hold a crate actually named `libxdo-sys`) to suggest
 `module_depth`; crates aren't suggested as `layers`, since a crate is a
-sibling package (the `modules` axis), not an architectural role. `layergrep
+sibling package (the `modules` axis), not an architectural role. For
+`layers` specifically, Rust projects get their own candidate set instead —
+Cargo conventions (`tests`/`examples`/`benches` dirs, a Tauri app's
+`commands`/`handlers` surface) and one layer per `[[bin]]` target read
+straight from the manifest — rather than the Flask/Django-shaped
+directory-naming guesses, which don't apply to Rust code at all. `layergrep
 calibrate-thresholds` reports the real match-count distribution for the
 `literal_noise_threshold`/`import_noise_threshold` fields on an already-
 indexed project, instead of leaving you to guess whether the defaults (tuned
