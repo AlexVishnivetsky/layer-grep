@@ -13,7 +13,7 @@ import model_config
 # instance) would otherwise shadow the module name within the same scope
 import project_config as pconfig
 from chunker import CHUNKER_VERSION
-from imports import IMPORTS_VERSION
+from imports import IMPORT_GRAPH_EXTENSIONS, IMPORTS_VERSION
 from json_index import JSON_INDEX_VERSION
 
 logger = logging.getLogger("layergrep.db_schema")
@@ -59,13 +59,19 @@ def _wipe_for_chunker_version(conn: sqlite3.Connection) -> None:
 
 
 def _wipe_for_imports_version(conn: sqlite3.Connection) -> None:
-    # every .py file needs reprocessing to (re)populate imports, not just ones already
-    # in the `imports` table - on the very first introduction of import-graph tracking
-    # that table starts empty, so scoping this to "already has import rows" would never
-    # force anything and silently leave the graph empty forever
-    py_paths = [r[0] for r in conn.execute("SELECT path FROM files WHERE path LIKE '%.py'")]
+    # every file of an import-graph-covered extension needs reprocessing to (re)populate
+    # imports, not just ones already in the `imports` table - on the very first introduction
+    # of import-graph tracking that table starts empty, so scoping this to "already has
+    # import rows" would never force anything and silently leave the graph empty forever.
+    # Filtered in Python (not a chain of SQL LIKEs) against the same IMPORT_GRAPH_EXTENSIONS
+    # indexer.py dispatches on, so a newly-covered extension can't drift out of sync between
+    # the two call sites.
+    affected_paths = [
+        r[0] for r in conn.execute("SELECT path FROM files")
+        if Path(r[0]).suffix.lower() in IMPORT_GRAPH_EXTENSIONS
+    ]
     conn.execute("DELETE FROM imports")
-    for p in py_paths:
+    for p in affected_paths:
         conn.execute("DELETE FROM files WHERE path = ?", (p,))
 
 
