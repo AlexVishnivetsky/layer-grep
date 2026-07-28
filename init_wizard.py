@@ -53,6 +53,18 @@ _LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
         "files": ["tasks.py", "jobs.py", "cron.py", "worker.py", "workers.py"],
     },
 }
+# Rust-specific layer candidates - the web-framework dict above is actively wrong here (it
+# guessed "frontend"/"models"/"config" from unrelated Flutter/Xcode folder names on a real
+# Rust project), since Rust code doesn't follow Flask/Django-style naming at all. These are
+# genuine Cargo/ecosystem conventions instead: tests/examples/benches are directories Cargo
+# itself treats specially (not just a naming guess), and commands/handlers is the common
+# shape of a Tauri app's IPC-exposed surface (the closest Rust analogue to "backend/api").
+_RUST_LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
+    "tests": {"dirs": ["tests"], "files": []},
+    "examples": {"dirs": ["examples"], "files": []},
+    "benches": {"dirs": ["benches"], "files": []},
+    "commands": {"dirs": ["commands", "handlers"], "files": ["commands.rs", "handlers.rs"]},
+}
 _TRANSLATIONS_DIR_CANDIDATES = ["langs", "locales", "i18n", "translations"]
 _FRONTEND_EXTENSIONS = {".jsx", ".tsx"}
 
@@ -151,6 +163,32 @@ def _find_rust_crates(project_root: Path) -> list[tuple[str, Path]]:
     return crates
 
 
+def _find_rust_bin_targets(project_root: Path) -> list[tuple[str, str]]:
+    """(bin_name, file_basename) for every [[bin]] target declared across all Cargo.toml
+    manifests under project_root - Cargo's own path default (src/bin/<name>.rs) applies when
+    a [[bin]] entry omits "path". Each bin is a genuinely separate deliverable/entry point
+    (unlike a plain module inside the crate it's built from), which is exactly the kind of
+    cross-cutting distinction "layer" is meant to capture - e.g. rustdesk's Cargo.toml
+    declares "naming" and "service" bins alongside its main app, each its own concern."""
+    import tomllib
+    bins: list[tuple[str, str]] = []
+    for cargo_path in sorted(project_root.rglob("Cargo.toml")):
+        if any(part in _SCAN_EXCLUDED_DIR_NAMES for part in cargo_path.relative_to(project_root).parts):
+            continue
+        try:
+            with cargo_path.open("rb") as f:
+                data = tomllib.load(f)
+        except (tomllib.TOMLDecodeError, OSError):
+            continue
+        for entry in data.get("bin", []):
+            name = entry.get("name")
+            if not name:
+                continue
+            path = entry.get("path") or f"src/bin/{name}.rs"
+            bins.append((name, Path(path).name))
+    return bins
+
+
 def suggest_project_config(project_root: Path) -> dict:
     """Draft .layergrep.json content from structural heuristics alone - no LLM, no content
     analysis beyond directory/file names and one extension check. Meant to be reviewed and
@@ -185,6 +223,16 @@ def suggest_project_config(project_root: Path) -> dict:
     # monorepo - that's the module dimension (classify_module), not layer: layer is a
     # cross-cutting architectural role (frontend/backend/config), which crate names aren't.
     rust_crates = _find_rust_crates(project_root) if "Rust" in detected_languages else []
+
+    if "Rust" in detected_languages:
+        for layer_name, candidates in _RUST_LAYER_STRUCTURE_CANDIDATES.items():
+            matched_dirs = [dir_names[c] for c in candidates["dirs"] if c in dir_names]
+            matched_files = [file_names[c] for c in candidates["files"] if c in file_names]
+            if matched_dirs or matched_files:
+                layers.append({"name": layer_name, "dirs": matched_dirs, "files": matched_files})
+
+        for bin_name, file_basename in _find_rust_bin_targets(project_root):
+            layers.append({"name": bin_name, "dirs": [], "files": [file_basename]})
 
     translations_files: list[str] = []
     for cand in _TRANSLATIONS_DIR_CANDIDATES:
