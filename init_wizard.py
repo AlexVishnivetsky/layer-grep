@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from indexer import EXCLUDED_DIR_NAMES
@@ -225,6 +226,155 @@ def _find_rust_bin_targets(project_root: Path) -> list[tuple[str, str]]:
     return bins
 
 
+# #25/#26: CMake is C/C++'s closest equivalent to Cargo.toml being worth targeting first -
+# the only one of the fragmented C/C++ build-tool landscape (CMake/Makefiles/Meson/Bazel/
+# Autotools, no dominant standard) whose target declarations (add_library/add_executable)
+# are parseable for the common literal case without a full CMake evaluator.
+#
+# Anchored on a preceding non-identifier boundary so a bare substring match doesn't fire
+# inside an unrelated custom macro that happens to end the same way, e.g. fmt's CUDA test
+# tree calls a distinct `cuda_add_executable(...)` macro with no guaranteed argument shape.
+_CMAKE_TARGET_CALL_RE = re.compile(r"(?<!\w)add_(?:library|executable)\s*\(", re.IGNORECASE)
+
+# Non-source keyword arguments that can appear in an add_library/add_executable call,
+# combined into one set since neither list overlaps with the other's real source files.
+_CMAKE_NON_SOURCE_KEYWORDS = frozenset({
+    # add_library
+    "STATIC", "SHARED", "MODULE", "OBJECT", "UNKNOWN", "ALIAS", "IMPORTED", "GLOBAL",
+    "EXCLUDE_FROM_ALL", "INTERFACE",
+    # add_executable
+    "WIN32", "MACOSX_BUNDLE",
+})
+# A generator expression ($<...>, CMake's own reserved syntax) is conventionally an
+# additive extra entry alongside otherwise-literal sources (e.g. PuTTY's
+# `$<TARGET_OBJECTS:logging>` mixed in with a dozen literal .c files) - dropping just this
+# one token is safe. A plain variable reference (${...}) is a different, much riskier
+# shape: real-world CMake very commonly builds the *entire* source list into one variable
+# first (`list(APPEND uv_sources ...)` then `add_library(uv SHARED ${uv_sources})`, seen
+# verbatim in libuv) - if a call mixes one such reference with an incidental literal token
+# (e.g. libuv's `add_executable(uv_run_tests ${uv_test_sources} uv_win_longpath.manifest)`),
+# dropping only the variable token and keeping the literal one produces a badly misleading
+# result (a "complete-looking" 1-file module for a target that really has ~150 sources) -
+# worse than not detecting the target at all. So a bare `${...}` (or any other `$`/`{`/`}`/
+# `<`/`>` shape that isn't a `$<...>` generator expression) aborts the whole target instead.
+_CMAKE_GENERATOR_EXPR_RE = re.compile(r"\$<")
+_CMAKE_DYNAMIC_TOKEN_RE = re.compile(r"[${}<>]")
+
+
+def _extract_cmake_call_body(text: str, open_paren_idx: int) -> str | None:
+    """Text between a call's open paren (at open_paren_idx) and its matching close paren,
+    with any `#`-to-end-of-line comments stripped - or None if the parens never balance
+    (truncated/malformed file, not worth guessing at). CMake command arguments don't nest
+    parens in the common case, so plain depth-counting is enough - no real tokenizing
+    parser needed. Comment-tracking has to share this same character-by-character scan
+    rather than run as a separate pass afterward: real multi-line calls (seen in PuTTY's
+    CMakeLists.txt) carry trailing `# comment` text inside the parens, and a stray `)`
+    inside a comment must not prematurely end the match."""
+    depth = 0
+    in_comment = False
+    body_chars: list[str] = []
+    for i in range(open_paren_idx, len(text)):
+        ch = text[i]
+        if in_comment:
+            if ch == "\n":
+                in_comment = False
+                body_chars.append(ch)
+            continue
+        if ch == "#":
+            in_comment = True
+        elif ch == "(":
+            depth += 1
+            if depth > 1:
+                body_chars.append(ch)
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(body_chars)
+            body_chars.append(ch)
+        else:
+            body_chars.append(ch)
+    return None
+
+
+def _tokenize_cmake_args(body: str) -> list[str]:
+    """Splits a call's argument text on whitespace, treating a "..."-quoted run as one
+    token with the quotes stripped - not CMake's full quoting/escaping rules, just enough
+    for the common case (e.g. "${_target}.c", "curlinfo.c" both seen in real manifests)."""
+    tokens = re.findall(r'"[^"]*"|\S+', body)
+    return [t[1:-1] if len(t) >= 2 and t[0] == '"' and t[-1] == '"' else t for t in tokens]
+
+
+def _find_cmake_targets(project_root: Path) -> list[tuple[str, list[str]]]:
+    """(target_name, [source_basenames]) for every add_library/add_executable call found
+    across all CMakeLists.txt under project_root - CMake's closest equivalent to Cargo's
+    [[bin]]/[lib] targets. Each detected target becomes its own module_rules entry (a
+    sibling deliverable/package, not a recurring architectural role - see the module vs.
+    layer rationale where this is called from in suggest_project_config()).
+
+    Deliberately not a full CMake evaluator - only resolves calls whose target name is
+    literal text, skipping anything built from a variable/generator-expression entirely
+    (e.g. curl's real libcurl/CLI targets, all declared via
+    `add_library(${LIB_STATIC} ...)` - expected to go undetected here, not a bug to chase;
+    nothing downstream is resolvable without evaluating CMake once the name itself isn't
+    literal). Among the *source* tokens, a `$<...>` generator expression is dropped
+    individually (real-world calls often mix a handful of literal sources with one such
+    additive entry, e.g. PuTTY's `$<TARGET_OBJECTS:logging>` alongside a dozen literal .c
+    files) - but a bare `${...}` variable reference aborts the *whole* target instead of
+    just that token: real CMake very commonly builds the entire source list into one
+    variable first (`list(APPEND uv_sources ...)` then `add_library(uv SHARED
+    ${uv_sources})`, seen verbatim in libuv), so keeping whatever incidental literal token
+    happens to sit alongside it would produce a confidently-wrong, badly incomplete result
+    (libuv's real `add_executable(uv_run_tests ${uv_test_sources}
+    uv_win_longpath.manifest)` would otherwise report a "complete-looking" 1-file target
+    for something that really has ~150 sources) - worse than not detecting it at all. A
+    target left with zero real sources (either from this abort or from every token being a
+    dropped keyword/generator-expression) is skipped by the empty-result check below.
+
+    Multiple manifests declaring the same target name are merged (union of basenames),
+    not treated as a collision - the expected, common case for cross-platform C, e.g.
+    PuTTY declares "pageant" once in unix/CMakeLists.txt and once in windows/CMakeLists.txt
+    with overlapping-but-not-identical sources; both genuinely belong to the same
+    logical deliverable."""
+    targets: dict[str, list[str]] = {}
+    for cmake_path in sorted(project_root.rglob("CMakeLists.txt")):
+        if any(part in _SCAN_EXCLUDED_DIR_NAMES for part in cmake_path.relative_to(project_root).parts):
+            continue
+        try:
+            text = cmake_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in _CMAKE_TARGET_CALL_RE.finditer(text):
+            body = _extract_cmake_call_body(text, match.end() - 1)
+            if body is None:
+                continue
+            tokens = _tokenize_cmake_args(body)
+            if not tokens:
+                continue
+            name, *rest = tokens
+            if _CMAKE_DYNAMIC_TOKEN_RE.search(name):
+                continue
+            basenames = []
+            has_bare_variable_reference = False
+            for token in rest:
+                if token in _CMAKE_NON_SOURCE_KEYWORDS:
+                    continue
+                if _CMAKE_GENERATOR_EXPR_RE.search(token):
+                    continue
+                if _CMAKE_DYNAMIC_TOKEN_RE.search(token):
+                    has_bare_variable_reference = True
+                    break
+                source_path = cmake_path.parent / token
+                if source_path.is_file():
+                    basenames.append(source_path.name)
+            if has_bare_variable_reference or not basenames:
+                continue
+            existing = targets.setdefault(name, [])
+            for basename in basenames:
+                if basename not in existing:
+                    existing.append(basename)
+    return [(name, sorted(basenames)) for name, basenames in sorted(targets.items())]
+
+
 def suggest_project_config(project_root: Path) -> dict:
     """Draft .layergrep.json content from structural heuristics alone - no LLM, no content
     analysis beyond directory/file names and one extension check. Meant to be reviewed and
@@ -278,6 +428,28 @@ def suggest_project_config(project_root: Path) -> dict:
             if matched_dirs or matched_files:
                 layers.append({"name": layer_name, "dirs": matched_dirs, "files": matched_files})
 
+    # #25: CMakeLists.txt target detection - gated on "C" alone (not C++ yet) even though
+    # _find_cmake_targets itself doesn't care what language a target's sources are, to keep
+    # this ticket's scope to what #25 asks for. #26 broadens this to "C" or "C++" once
+    # validated separately against a real C++/CMake project, mirroring how
+    # _C_LAYER_STRUCTURE_CANDIDATES above was itself extended from C to C++ (#24).
+    #
+    # A named CMake target (add_library/add_executable) is a sibling deliverable/package -
+    # "pageant", "network", "charset" aren't architectural roles that recur across a
+    # codebase (unlike "config"/"models"), they're specific named components. That's the
+    # module dimension (classify_module), the same reasoning already applied to Rust crate
+    # names just above - not layer, which #25 originally (incorrectly) mirrored from Rust's
+    # [[bin]] targets instead of from Rust's crates. A [[bin]] genuinely earns layer
+    # treatment because it's a distinct deliverable *without its own directory* to be
+    # grouped into as a module; a CMake target has exactly the same problem (its sources are
+    # often scattered across shared directories, not its own subtree) - module_rules (this
+    # dict-based rule mechanism instead of module_depth) is exactly the escape hatch built
+    # for a business entity that doesn't align with any single directory.
+    modules: list[dict] = []
+    if "C" in detected_languages:
+        for target_name, basenames in _find_cmake_targets(project_root):
+            modules.append({"name": target_name, "dirs": [], "files": basenames})
+
     # Computed only after every layer source (general dict, frontend fallback, Rust/C
     # conventions, bin targets) has had a chance to populate `layers` - checking this any
     # earlier could wrongly report "other" for a project whose only matches come from a
@@ -305,6 +477,7 @@ def suggest_project_config(project_root: Path) -> dict:
         "_detected_languages": detected_languages,
         "layers": layers,
         "default_layer": default_layer,
+        "modules": modules,
         "translations": {"files": translations_files},
         "extra_excluded_dirs": [],
     }

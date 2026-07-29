@@ -58,7 +58,7 @@ Not every feature is at full parity across languages yet.
 | Cross-layer literal linking | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ❌ | ❌ |
+| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ✅ | ❌ |
 
 ## Install
 
@@ -187,8 +187,26 @@ sibling package (the `modules` axis), not an architectural role. For
 Cargo conventions (`tests`/`examples`/`benches` dirs, a Tauri app's
 `commands`/`handlers` surface) and one layer per `[[bin]]` target read
 straight from the manifest — rather than the Flask/Django-shaped
-directory-naming guesses, which don't apply to Rust code at all. `layergrep
-calibrate-thresholds` reports the real match-count distribution for the
+directory-naming guesses, which don't apply to Rust code at all. C has no
+single dominant manifest format the way Cargo.toml is for Rust (CMake,
+Makefiles, Meson, Bazel, and Autotools all coexist), so this is scoped to
+`CMakeLists.txt` only: every `add_library`/`add_executable` call with a
+literal target name becomes its own `modules` rule (matched by the source
+files' basenames), resolved straight from the manifest rather than guessed
+from directory naming — a named CMake target is a sibling deliverable
+(the `modules` axis, same reasoning as Rust crate names above), not a
+recurring architectural role. A target built from a variable name (e.g.
+`add_library(${LIB_NAME} ...)`, common in larger CMake projects) can't be
+resolved this way and is skipped — a directory-naming-based layer guess
+may still catch it. Same caution applies to individual source arguments:
+a `$<...>` generator expression is dropped on its own (usually one extra
+entry alongside otherwise-literal sources), but a bare `${...}` variable
+reference aborts the whole target instead of just that argument — real
+CMake very commonly builds an entire source list into one variable first,
+and keeping whatever incidental literal token happens to sit next to it
+would report a confidently-wrong, badly incomplete file list rather than
+correctly detecting nothing. `layergrep calibrate-thresholds` reports the real
+match-count distribution for the
 `literal_noise_threshold`/`import_noise_threshold` fields on an already-
 indexed project, instead of leaving you to guess whether the defaults (tuned
 on one ~8000-chunk corpus) fit yours.
@@ -213,6 +231,18 @@ They run via whatever's already installed in your activated dev venv (`language:
 `.pre-commit-config.yaml`), not a separate managed environment — so a local run always
 matches a manual `ruff check .`/`mypy .`/`bandit ...` invocation exactly, with nothing to
 keep in sync.
+
+## Related reading
+
+- Zhang et al., "cAST: Enhancing Code Retrieval-Augmented Generation with
+  Structural Chunking via Abstract Syntax Tree", *Findings of ACL: EMNLP
+  2025* — [arxiv.org/abs/2506.15655](https://arxiv.org/abs/2506.15655)
+- Tao, Li, Qin, Liu, "Retrieval-Augmented Code Generation: A Survey with
+  Focus on Repository-Level Approaches", Oct 2025 —
+  [arxiv.org/abs/2510.04905](https://arxiv.org/abs/2510.04905)
+- Prieto-Díaz, "Implementing Faceted Classification for Software Reuse",
+  *CACM*, 1991 — DOI:
+  [10.1145/103167.103176](https://doi.org/10.1145/103167.103176)
 
 ## License
 
