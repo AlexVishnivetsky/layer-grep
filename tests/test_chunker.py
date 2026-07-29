@@ -295,6 +295,171 @@ def test_rust_bodyless_mod_declaration_produces_no_chunk(tmp_path, write_file):
     assert chunks == []
 
 
+def test_c_function(tmp_path, write_file):
+    p = write_file(tmp_path, "mod.c", "int add(int a, int b) {\n    return a + b;\n}\n")
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "function"
+    assert chunks[0].name == "add"
+
+
+def test_c_pointer_returning_function_naming(tmp_path, write_file):
+    """`int *foo(void)` - the identifier is nested inside a pointer_declarator wrapping the
+    function_declarator, not directly on it."""
+    p = write_file(tmp_path, "mod.c", "int *make_thing(void) {\n    return 0;\n}\n")
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].name == "make_thing"
+
+
+def test_c_doc_comment_attached(tmp_path, write_file):
+    src = (
+        "/// Adds two numbers.\n"
+        "// implementation note\n"
+        "int add(int a, int b) {\n"
+        "    return a + b;\n"
+        "}\n"
+    )
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].start_line == 1  # doc comment line, not the `int` line
+    assert "/// Adds two numbers." in chunks[0].text
+    assert "// implementation note" in chunks[0].text
+
+
+def test_c_struct_fields(tmp_path, write_file):
+    src = "struct Point {\n    int x;\n    int y;\n};\n"
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "class"
+    assert chunks[0].name == "Point"
+    assert "int x;" in chunks[0].text
+
+
+def test_c_anonymous_typedef_struct_naming(tmp_path, write_file):
+    """`typedef struct { ... } Name;` - the struct itself has no `name` field (anonymous);
+    the real name lives on the typedef's own `declarator` field."""
+    src = "typedef struct {\n    int width;\n    int height;\n} Rectangle;\n"
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "class"
+    assert chunks[0].name == "Rectangle"
+    assert "int width;" in chunks[0].text
+
+
+def test_c_enum_and_union(tmp_path, write_file):
+    src = (
+        "enum Color {\n    RED,\n    GREEN,\n    BLUE\n};\n"
+        "\n"
+        "union Value {\n    int i;\n    float f;\n};\n"
+    )
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "Color" in by_name
+    assert "RED" in by_name["Color"].text
+    assert "Value" in by_name
+    assert "int i;" in by_name["Value"].text
+
+
+def test_c_header_guard_does_not_hide_content(tmp_path, write_file):
+    """The near-universal `#ifndef X / #define X / ... / #endif` include guard wraps the
+    ENTIRE file in one preproc_ifdef node - without flattening it, every declaration inside
+    a guarded .h file would be invisible to chunking."""
+    src = (
+        "#ifndef SAMPLE_H\n"
+        "#define SAMPLE_H\n"
+        "\n"
+        "int add(int a, int b) {\n"
+        "    return a + b;\n"
+        "}\n"
+        "\n"
+        "#endif\n"
+    )
+    p = write_file(tmp_path, "mod.h", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "add" in by_name
+    assert by_name["add"].node_type == "function"
+
+
+def test_c_ifdef_else_both_branches_chunked(tmp_path, write_file):
+    src = (
+        "#ifdef DEBUG\n"
+        "int mode(void) { return 1; }\n"
+        "#else\n"
+        "int mode_release(void) { return 2; }\n"
+        "#endif\n"
+    )
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    names = {c.name for c in chunks}
+    assert "mode" in names
+    assert "mode_release" in names
+
+
+def test_c_extern_c_linkage_block_flattened(tmp_path, write_file):
+    src = (
+        "#ifdef __cplusplus\n"
+        'extern "C" {\n'
+        "#endif\n"
+        "\n"
+        "int foo(void) {\n"
+        "    return 1;\n"
+        "}\n"
+        "\n"
+        "#ifdef __cplusplus\n"
+        "}\n"
+        "#endif\n"
+    )
+    p = write_file(tmp_path, "mod.h", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "foo" in by_name
+    assert by_name["foo"].node_type == "function"
+
+
+def test_c_include_ignored(tmp_path, write_file):
+    src = '#include <stdio.h>\n#include "other.h"\n\nint foo(void) { return 1; }\n'
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].name == "foo"
+
+
+def test_c_define_swept_as_block(tmp_path, write_file):
+    src = "#define MAX_ITEMS 10\n#define MIN_ITEMS 1\n"
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "block"
+    assert chunks[0].name == "MAX_ITEMS"
+
+
+def test_c_function_prototype_swept_as_block(tmp_path, write_file):
+    """A prototype has no body to chunk as a function - it's data about the API surface,
+    same spirit as a top-level const."""
+    src = "int add(int a, int b);\nvoid free_thing(struct Thing *t);\n"
+    p = write_file(tmp_path, "mod.h", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "block"
+    assert chunks[0].name == "add"
+    assert "free_thing" in chunks[0].text
+
+
+def test_c_global_declaration_swept_as_block(tmp_path, write_file):
+    src = "const int GLOBAL_CONST = 42;\nstatic int counter = 0;\n"
+    p = write_file(tmp_path, "mod.c", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "block"
+    assert chunks[0].name == "GLOBAL_CONST"
+
+
 def test_unsupported_extension_raises(tmp_path, write_file):
     p = write_file(tmp_path, "mod.rb", "def foo; end\n")
     with pytest.raises(ValueError):

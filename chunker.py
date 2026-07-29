@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tree_sitter_c as tsc
 import tree_sitter_javascript as tsjavascript
 import tree_sitter_python as tspython
 import tree_sitter_rust as tsrust
@@ -15,7 +16,7 @@ from tree_sitter import Language, Node, Parser
 # new node handling, etc.) - indexer.py compares this against what a .db was built with and
 # forces a full reindex on mismatch, since file-content hashes alone can't detect that a def
 # unchanged in the codebase should now be re-chunked differently.
-CHUNKER_VERSION = 6
+CHUNKER_VERSION = 7
 
 FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
 
@@ -26,10 +27,24 @@ FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "func
 # covers route-registration files like `with router('/some_path'): router(...,
 # name='...')` (Python only) - these have zero functions/classes too, but the route paths
 # and handler names inside are exactly what a literal-grep query is likely to contain.
-SWEEPABLE_TOP_LEVEL_TYPES = frozenset({"expression_statement", "with_statement", "const_item", "static_item"})
+SWEEPABLE_TOP_LEVEL_TYPES = frozenset({
+    "expression_statement", "with_statement", "const_item", "static_item",
+    # C: `#define X 10` (real macro constants and the near-universal header-guard `#define`
+    # alike - not worth distinguishing, see TRANSPARENT_CONTAINER_TYPES docstring below),
+    # plain top-level `declaration` (globals, `extern` decls, function prototypes - a
+    # prototype has no body to chunk as a function, it's data about the API surface, same
+    # spirit as a Rust const_item), and a non-container `typedef` alias (`typedef int
+    # MyInt;` - `typedef struct {...} X;` never reaches here, see wrapper_types on C_LANG).
+    "preproc_def", "declaration", "type_definition",
+})
 # Never swept into a data block, and don't break one either - just skipped
 IGNORED_TOP_LEVEL_TYPES = frozenset({
     "import_statement", "import_from_statement", "future_import_statement", "use_declaration",
+    "preproc_include",
+    # Recovery artifact from a preprocessor directive appearing where a declaration was
+    # expected (seen with `#ifdef __cplusplus` / `extern "C" { ... }` nesting where the
+    # inner guard's #endif lands inside the linkage_specification's body) - not real content.
+    "preproc_call",
 })
 
 
@@ -102,6 +117,20 @@ RUST_LANG = LangSpec(
     annotation_types=frozenset({"line_comment", "block_comment", "attribute_item"}),
 )
 
+# C has no OOP concept at all - struct/union/enum are plain data containers with no nested
+# methods (method_types/field_fn_types stay empty). `type_definition` is a wrapper_type
+# purely for `typedef struct/enum/union {...} Name;`: the aggregate itself is anonymous (no
+# `name` field), and the real name lives one level up on the typedef - _unwrap() already
+# finds the inner struct/enum/union via class_types membership, _node_name() below is
+# extended to prefer the typedef's own name over the (missing) inner one.
+C_LANG = LangSpec(
+    language=Language(tsc.language()),
+    function_types=frozenset({"function_definition"}),
+    class_types=frozenset({"struct_specifier", "union_specifier", "enum_specifier"}),
+    wrapper_types=frozenset({"type_definition"}),
+    method_types=frozenset(),
+)
+
 EXTENSION_LANGS: dict[str, LangSpec] = {
     ".py": PY_LANG,
     ".js": JS_LANG,
@@ -109,7 +138,57 @@ EXTENSION_LANGS: dict[str, LangSpec] = {
     ".ts": TS_LANG,
     ".tsx": TSX_LANG,
     ".rs": RUST_LANG,
+    ".c": C_LANG,
+    # Ambiguous with C++ headers (issue #20) - treated as C for now since tree-sitter-c
+    # parses the common subset fine; a C++-flavored .h will need issue #20 to sniff content
+    # and dispatch to a C++ LangSpec instead of guessing from the extension alone.
+    ".h": C_LANG,
 }
+
+# C's preprocessor conditional blocks (#ifdef/#if/#elif/#else) and `extern "C" { ... }`
+# linkage blocks routinely wrap an entire header's real content - the #ifndef/#define/#endif
+# include guard is near-universal - so if these aren't looked through, virtually no .h file
+# would produce any function/struct/enum chunks at all; everything would be hidden inside one
+# opaque top-level node. These node types are "transparent": their content children get
+# spliced into the enclosing sibling sequence (top-level, or a struct/union body) as if the
+# wrapper wasn't there, recursively (an #ifdef's #else branch is itself transparent, etc).
+TRANSPARENT_CONTAINER_TYPES = frozenset({
+    "preproc_ifdef", "preproc_if", "preproc_elif", "preproc_else", "linkage_specification",
+})
+# Per-container field name(s) holding the condition/tag/type part rather than real content -
+# these must NOT be spliced in alongside the actual body (an `identifier` macro name or a
+# `#if` condition expression can never legitimately be a top-level statement on its own).
+_TRANSPARENT_CONTAINER_SKIP_FIELDS: dict[str, frozenset[str]] = {
+    "preproc_ifdef": frozenset({"name"}),
+    "preproc_if": frozenset({"condition"}),
+    "preproc_elif": frozenset({"condition"}),
+}
+# linkage_specification's real content (`extern "C" { ... }`) lives one level deeper, inside
+# its `body` (declaration_list) field - descending into its own direct children would just
+# yield that declaration_list as a single node instead of looking inside it.
+_TRANSPARENT_CONTAINER_DESCEND_FIELD: dict[str, str] = {
+    "linkage_specification": "body",
+}
+
+
+def _flatten_transparent(nodes: Sequence[Node]) -> list[Node]:
+    result: list[Node] = []
+    for node in nodes:
+        if node.type not in TRANSPARENT_CONTAINER_TYPES:
+            result.append(node)
+            continue
+        descend_field = _TRANSPARENT_CONTAINER_DESCEND_FIELD.get(node.type)
+        if descend_field is not None:
+            body = node.child_by_field_name(descend_field)
+            children = list(body.named_children) if body is not None else []
+        else:
+            skip_fields = _TRANSPARENT_CONTAINER_SKIP_FIELDS.get(node.type, frozenset())
+            children = [
+                child for i, child in enumerate(node.children)
+                if child.is_named and node.field_name_for_child(i) not in skip_fields
+            ]
+        result.extend(_flatten_transparent(children))
+    return result
 
 
 @dataclass
@@ -136,10 +215,28 @@ def _unwrap(node: Node, spec: LangSpec) -> Node:
     return node
 
 
+def _c_declarator_leaf_name(node: Node | None, source: bytes) -> str | None:
+    """Descends a C declarator chain (`function_declarator`/`pointer_declarator`/
+    `array_declarator` -> ... -> `identifier`) to the leaf name - shared by function/struct
+    naming (below) and top-level declaration/typedef/macro naming (`_first_bound_name`),
+    which all bottom out at the same declarator shape."""
+    while node is not None:
+        if node.type in ("identifier", "type_identifier"):
+            return source[node.start_byte:node.end_byte].decode("utf-8")
+        node = node.child_by_field_name("declarator")
+    return None
+
+
 def _decl_name(node: Node, source: bytes) -> str | None:
     name_node = node.child_by_field_name("name") or node.child_by_field_name("property")
     if name_node is not None:
         return source[name_node.start_byte:name_node.end_byte].decode("utf-8")
+    # C `function_definition` has no "name" field of its own - the identifier is nested
+    # inside its "declarator" field (`function_declarator`, possibly wrapped in a
+    # `pointer_declarator` for a pointer-returning function like `int *foo(void)`).
+    declarator_name = _c_declarator_leaf_name(node.child_by_field_name("declarator"), source)
+    if declarator_name is not None:
+        return declarator_name
     # Rust `impl Foo { }` / `impl Trait for Foo { }` has no "name" field at all - fall back
     # to the "type" (+ "trait") field so impl blocks aren't all just "<anonymous>".
     type_node = node.child_by_field_name("type")
@@ -154,7 +251,16 @@ def _decl_name(node: Node, source: bytes) -> str | None:
 
 
 def _node_name(node: Node, spec: LangSpec, source: bytes) -> str:
-    return _decl_name(_unwrap(node, spec), source) or "<anonymous>"
+    effective = _unwrap(node, spec)
+    if effective is not node:
+        # C `typedef struct/enum/union {...} Name;` - the aggregate _unwrap() found is
+        # anonymous (no `name` field of its own), but the typedef wrapping it carries the
+        # real name in its own `declarator` field. Prefer that before falling back to
+        # whatever (missing) name the unwrapped node itself would report.
+        declarator = node.child_by_field_name("declarator")
+        if declarator is not None and declarator.type in ("type_identifier", "identifier"):
+            return source[declarator.start_byte:declarator.end_byte].decode("utf-8")
+    return _decl_name(effective, source) or "<anonymous>"
 
 
 def _single_function_assignment(node: Node, source: bytes) -> tuple[str, Node] | None:
@@ -190,7 +296,16 @@ def _first_bound_name(node: Node, source: bytes) -> str | None:
         name_node = target.child_by_field_name("name")
         if name_node is not None:
             return source[name_node.start_byte:name_node.end_byte].decode("utf-8")
+    elif target.type in ("declaration", "type_definition", "preproc_def"):
+        return _c_declarator_name(target, source)
     return None
+
+
+def _c_declarator_name(node: Node, source: bytes) -> str | None:
+    """C `declaration`/`type_definition`/`preproc_def` - `#define NAME ...` has its own
+    `name` field directly; the others need the shared declarator-chain descent."""
+    declarator = node.child_by_field_name("declarator") or node.child_by_field_name("name")
+    return _c_declarator_leaf_name(declarator, source)
 
 
 def _same_source_line(prev_node: Node, next_start_byte: int, source: bytes) -> bool:
@@ -282,7 +397,7 @@ def chunk_file(path: Path) -> list[Chunk]:
             # this class rather than raising, so one bad class doesn't lose every other
             # function/class chunk in the same file.
             return []
-        body_children = body.named_children
+        body_children = _flatten_transparent(body.named_children)
 
         method_entries: list[tuple[Node, str, list[Node]]] = []
         nested_class_chunks: list[Chunk] = []
@@ -334,7 +449,7 @@ def chunk_file(path: Path) -> list[Chunk]:
         return chunks
 
     chunks: list[Chunk] = []
-    top_children = tree.root_node.named_children
+    top_children = _flatten_transparent(tree.root_node.named_children)
     # (node, its own leading comments, its own same-line trailing comment or None)
     block_members: list[tuple[Node, list[Node], Node | None]] = []
     consumed_trailing_ids: set[int] = set()
