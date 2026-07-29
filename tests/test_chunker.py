@@ -464,7 +464,11 @@ def test_c_gcc_attribute_macro_leftover_semicolon_not_swept(tmp_path, write_file
         "    return 1;\n"
         "}\n"
     )
-    p = write_file(tmp_path, "mod.h", src)
+    # .c specifically (not .h) - since issue #20, .h dispatches to the C++ grammar, which
+    # recovers from this same pattern differently (a real declaration + a real macro-call
+    # expression_statement, not a bare-semicolon artifact) - see the C++-specific version of
+    # this scenario below.
+    p = write_file(tmp_path, "mod.c", src)
     chunks = chunk_file(p)
     assert len(chunks) == 1
     assert chunks[0].name == "real_func"
@@ -478,6 +482,232 @@ def test_c_global_declaration_swept_as_block(tmp_path, write_file):
     assert len(chunks) == 1
     assert chunks[0].node_type == "block"
     assert chunks[0].name == "GLOBAL_CONST"
+
+
+def test_cpp_free_function(tmp_path, write_file):
+    p = write_file(tmp_path, "mod.cpp", "int add(int a, int b) {\n    return a + b;\n}\n")
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "function"
+    assert chunks[0].name == "add"
+
+
+def test_cpp_class_with_constructor_destructor_and_method(tmp_path, write_file):
+    src = (
+        "class Point {\n"
+        "public:\n"
+        "    Point(int x, int y) : x_(x), y_(y) {}\n"
+        "    ~Point() {}\n"
+        "    int getX() const { return x_; }\n"
+        "private:\n"
+        "    int x_;\n"
+        "    int y_;\n"
+        "};\n"
+    )
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "Point" in by_name
+    assert by_name["Point"].node_type == "class"
+    assert "int x_;" in by_name["Point"].text
+    assert by_name["Point.Point"].node_type == "method"
+    assert by_name["Point.~Point"].node_type == "method"
+    assert by_name["Point.getX"].node_type == "method"
+
+
+def test_cpp_operator_overload_naming(tmp_path, write_file):
+    src = (
+        "class Point {\n"
+        "public:\n"
+        "    Point operator+(const Point& other) const { return other; }\n"
+        "};\n"
+    )
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    names = {c.name for c in chunks}
+    assert "Point.operator+" in names
+
+
+def test_cpp_struct_with_method(tmp_path, write_file):
+    src = "struct Rect {\n    int width;\n    int height;\n\n    int area() const { return width * height; }\n};\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "Rect" in by_name
+    assert "int width;" in by_name["Rect"].text
+    assert by_name["Rect.area"].node_type == "method"
+
+
+def test_cpp_namespace_nests_free_functions_and_classes(tmp_path, write_file):
+    src = (
+        "namespace app {\n"
+        "\n"
+        "int free_function(int a) { return a; }\n"
+        "\n"
+        "class Widget {\n"
+        "public:\n"
+        "    void run() {}\n"
+        "};\n"
+        "\n"
+        "}\n"
+    )
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    names = {c.name for c in chunks}
+    assert "app" in names
+    assert "app.free_function" in names
+    assert "app.Widget" in names
+    assert "app.Widget.run" in names
+
+
+def test_cpp_nested_namespace(tmp_path, write_file):
+    src = "namespace outer {\nnamespace inner {\nvoid nested_func() {}\n}\n}\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    names = {c.name for c in chunks}
+    assert "outer" in names
+    assert "outer.inner" in names
+    assert "outer.inner.nested_func" in names
+
+
+def test_cpp_anonymous_namespace(tmp_path, write_file):
+    src = "namespace {\nint hidden_helper() { return 1; }\n}\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    names = {c.name for c in chunks}
+    assert "<anonymous>" in names
+    assert "<anonymous>.hidden_helper" in names
+
+
+def test_cpp_template_function_unwrapped(tmp_path, write_file):
+    src = "template <typename T>\nT max_value(T a, T b) {\n    return a > b ? a : b;\n}\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].name == "max_value"
+    assert chunks[0].node_type == "function"
+    assert "template <typename T>" in chunks[0].text
+
+
+def test_cpp_template_class_unwrapped(tmp_path, write_file):
+    src = "template <typename T>\nclass Box {\npublic:\n    T value;\n    T get() const { return value; }\n};\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "Box" in by_name
+    assert "template <typename T>" in by_name["Box"].text
+    assert by_name["Box.get"].node_type == "method"
+
+
+def test_cpp_using_declaration_ignored(tmp_path, write_file):
+    src = "using namespace std;\n\nint foo() { return 1; }\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].name == "foo"
+
+
+def test_cpp_alias_declaration_swept_as_block(tmp_path, write_file):
+    src = "using MyInt = int;\nusing MyFloat = float;\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].node_type == "block"
+    assert chunks[0].name == "MyInt"
+
+
+def test_cpp_header_extension_dispatches_to_cpp_grammar(tmp_path, write_file):
+    # .h is ambiguous between C/C++ - resolved by routing through the C++ grammar (a superset
+    # for the constructs that matter here), so a C++-flavored .h file chunks correctly too
+    src = "class Widget {\npublic:\n    void run() {}\n};\n"
+    p = write_file(tmp_path, "mod.h", src)
+    chunks = chunk_file(p)
+    names = {c.name for c in chunks}
+    assert "Widget" in names
+    assert "Widget.run" in names
+
+
+def test_cpp_export_macro_before_class_name_still_recognized_as_class(tmp_path, write_file):
+    # DLL/module export macros conventionally spelled <NAME>_API (MSVC __declspec wrapper,
+    # e.g. Unreal Engine's <MODULE>_API) between `class`/`struct` and the class name aren't
+    # valid C++ grammar - without stripping them first, tree-sitter-cpp misparses the whole
+    # class as a bogus function_definition (found on a real UE project, issue #20)
+    src = (
+        "class MYLIB_API Widget : public Base\n"
+        "{\n"
+        "public:\n"
+        "    void run() {}\n"
+        "};\n"
+    )
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "Widget" in by_name
+    assert by_name["Widget"].node_type == "class"
+    assert by_name["Widget.run"].node_type == "method"
+
+
+def test_cpp_export_macro_stripping_preserves_byte_offsets(tmp_path, write_file):
+    # the macro token is blanked with equal-length spaces, not removed, so start_line/end_line
+    # for everything else in the file stay exactly what a human reading the real source
+    # would expect
+    src = (
+        "// leading comment\n"
+        "\n"
+        "class MYLIB_API Widget\n"
+        "{\n"
+        "public:\n"
+        "    void run() {}\n"
+        "};\n"
+    )
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert by_name["Widget.run"].start_line == 6
+
+
+def test_cpp_export_macro_struct_before_name_still_recognized(tmp_path, write_file):
+    src = "struct MYLIB_API Data\n{\n    int value() { return 1; }\n};\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "Data" in by_name
+    assert by_name["Data"].node_type == "class"
+    assert by_name["Data.value"].node_type == "method"
+
+
+def test_cpp_out_of_class_method_definition_naming(tmp_path, write_file):
+    # `ReturnType ClassName::Method(...) { ... }` - the standard "declare in header, define
+    # in .cpp" pattern. The declarator's own child is a qualified_identifier, not a plain
+    # identifier - without handling it, _decl_name() falls through to the Rust impl-block
+    # fallback and wrongly names the chunk after the return type instead of the method.
+    src = "void Widget::run()\n{\n    x = 1;\n}\n"
+    p = write_file(tmp_path, "mod.cpp", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].name == "Widget::run"
+    assert chunks[0].node_type == "function"
+
+
+def test_cpp_extern_c_linkage_block_flattened(tmp_path, write_file):
+    src = (
+        "#ifdef __cplusplus\n"
+        'extern "C" {\n'
+        "#endif\n"
+        "\n"
+        "int foo(void) {\n"
+        "    return 1;\n"
+        "}\n"
+        "\n"
+        "#ifdef __cplusplus\n"
+        "}\n"
+        "#endif\n"
+    )
+    p = write_file(tmp_path, "mod.hpp", src)
+    chunks = chunk_file(p)
+    by_name = {c.name: c for c in chunks}
+    assert "foo" in by_name
+    assert by_name["foo"].node_type == "function"
 
 
 def test_unsupported_extension_raises(tmp_path, write_file):

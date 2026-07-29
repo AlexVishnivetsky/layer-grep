@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import tree_sitter_c as tsc
+import tree_sitter_cpp as tscpp
 import tree_sitter_javascript as tsjavascript
 import tree_sitter_python as tspython
 import tree_sitter_rust as tsrust
@@ -16,7 +18,7 @@ from tree_sitter import Language, Node, Parser
 # new node handling, etc.) - indexer.py compares this against what a .db was built with and
 # forces a full reindex on mismatch, since file-content hashes alone can't detect that a def
 # unchanged in the codebase should now be re-chunked differently.
-CHUNKER_VERSION = 8
+CHUNKER_VERSION = 10
 
 FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
 
@@ -36,6 +38,9 @@ SWEEPABLE_TOP_LEVEL_TYPES = frozenset({
     # spirit as a Rust const_item), and a non-container `typedef` alias (`typedef int
     # MyInt;` - `typedef struct {...} X;` never reaches here, see wrapper_types on C_LANG).
     "preproc_def", "declaration", "type_definition",
+    # C++ `using MyInt = int;` - the modern alias-declaration spelling of a typedef, same
+    # spirit as the plain `type_definition` case above.
+    "alias_declaration",
 })
 # Never swept into a data block, and don't break one either - just skipped
 IGNORED_TOP_LEVEL_TYPES = frozenset({
@@ -45,6 +50,9 @@ IGNORED_TOP_LEVEL_TYPES = frozenset({
     # expected (seen with `#ifdef __cplusplus` / `extern "C" { ... }` nesting where the
     # inner guard's #endif lands inside the linkage_specification's body) - not real content.
     "preproc_call",
+    # C++ `using namespace std;` / `using std::string;` - brings names into scope, same
+    # spirit as a Python import or Rust `use`, not something worth chunking or sweeping.
+    "using_declaration",
 })
 
 
@@ -131,6 +139,28 @@ C_LANG = LangSpec(
     method_types=frozenset(),
 )
 
+# Unlike C, C++ has real OOP: class/struct bodies hold actual member functions -
+# constructors/destructors/operator overloads all share the same `function_definition` node
+# type as regular methods and free functions (no special-casing needed, they only differ one
+# level down inside the declarator: `identifier`/`destructor_name`/`operator_name`/
+# `field_identifier` - see _decl_name()'s declarator-chain descent). `namespace_definition`
+# behaves like Rust's `mod_item`: an arbitrary-item container (free functions, classes, nested
+# namespaces) that reuses process_class()'s existing "class-shaped container tolerates
+# non-method children" handling - not really OOP, but structurally identical, including an
+# anonymous `namespace { ... }` correctly falling back to "<anonymous>" (no `name` field).
+# `template_declaration` wraps a function/class one level out - added to wrapper_types so
+# _unwrap() finds the real underlying item, verified against the real grammar (issue #20).
+CPP_LANG = LangSpec(
+    language=Language(tscpp.language()),
+    function_types=frozenset({"function_definition"}),
+    class_types=frozenset({
+        "class_specifier", "struct_specifier", "union_specifier", "enum_specifier",
+        "namespace_definition",
+    }),
+    wrapper_types=frozenset({"type_definition", "template_declaration"}),
+    method_types=frozenset({"function_definition"}),
+)
+
 EXTENSION_LANGS: dict[str, LangSpec] = {
     ".py": PY_LANG,
     ".js": JS_LANG,
@@ -139,11 +169,49 @@ EXTENSION_LANGS: dict[str, LangSpec] = {
     ".tsx": TSX_LANG,
     ".rs": RUST_LANG,
     ".c": C_LANG,
-    # Ambiguous with C++ headers (issue #20) - treated as C for now since tree-sitter-c
-    # parses the common subset fine; a C++-flavored .h will need issue #20 to sniff content
-    # and dispatch to a C++ LangSpec instead of guessing from the extension alone.
-    ".h": C_LANG,
+    ".cpp": CPP_LANG,
+    ".cc": CPP_LANG,
+    ".cxx": CPP_LANG,
+    ".hpp": CPP_LANG,
+    ".hh": CPP_LANG,
+    ".hxx": CPP_LANG,
+    # Ambiguous between C and C++ (issue #19's own note) - resolved by routing through the
+    # more permissive grammar rather than guessing from content: tree-sitter-cpp parses valid
+    # C code fine too (a near-strict syntactic superset for the constructs that matter here),
+    # while tree-sitter-c chokes on any genuinely C++-flavored construct (class/template/
+    # namespace aren't valid C) - so this is safe in both directions, unlike the reverse.
+    # Validated against real C-only projects (curl, PuTTY) to confirm no behavior change from
+    # the previous C_LANG mapping.
+    ".h": CPP_LANG,
 }
+
+# DLL/module export macros - conventionally spelled `<NAME>_API` (an MSVC __declspec
+# wrapper: MYLIB_API, Unreal Engine's <MODULE>_API, etc.) - appearing between `class`/
+# `struct` and the class name aren't part of standard C++ grammar. tree-sitter-cpp has no
+# macro expansion, so it misparses the entire class as a bogus top-level `function_definition`
+# when it sees one: the `type` field becomes a nameless `class_specifier` (just "class
+# SOME_API"), the real class name becomes the "declarator", the inheritance clause becomes an
+# ERROR node, and the class body gets parsed as a function's `compound_statement` instead of
+# a `field_declaration_list` - every member inside comes out mis-typed too (`declaration`
+# instead of `field_declaration`, `labeled_statement` instead of `access_specifier`).
+# Reconstructing that after the fact would mean teaching process_class() to also recognize
+# an entirely different, statement-shaped set of body child types - real, but disproportionate
+# complexity for what's actually a text-level problem: found on the very first real Unreal
+# Engine project tested (issue #20) - practically every UCLASS/USTRUCT in UE-flavored C++ has
+# this exact shape. Blanking the macro token out before parsing (replaced with equal-length
+# spaces, so every byte offset/line number in the rest of the file is unaffected) sidesteps
+# the whole problem without needing real preprocessing - safe because this naming convention
+# is essentially never used for anything else immediately after class/struct (confirmed
+# against a real, large UE codebase: every occurrence follows this exact shape, zero
+# counterexamples).
+_EXPORT_MACRO_PATTERN = re.compile(rb"\b(class|struct)(\s+)([A-Z_][A-Z0-9_]*_API)\b")
+
+
+def _strip_export_macros(source: bytes) -> bytes:
+    def blank(m: re.Match[bytes]) -> bytes:
+        return m.group(1) + m.group(2) + b" " * len(m.group(3))
+    return _EXPORT_MACRO_PATTERN.sub(blank, source)
+
 
 # C's preprocessor conditional blocks (#ifdef/#if/#elif/#else) and `extern "C" { ... }`
 # linkage blocks routinely wrap an entire header's real content - the #ifndef/#define/#endif
@@ -216,12 +284,22 @@ def _unwrap(node: Node, spec: LangSpec) -> Node:
 
 
 def _c_declarator_leaf_name(node: Node | None, source: bytes) -> str | None:
-    """Descends a C declarator chain (`function_declarator`/`pointer_declarator`/
-    `array_declarator` -> ... -> `identifier`) to the leaf name - shared by function/struct
-    naming (below) and top-level declaration/typedef/macro naming (`_first_bound_name`),
-    which all bottom out at the same declarator shape."""
+    """Descends a C/C++ declarator chain (`function_declarator`/`pointer_declarator`/
+    `array_declarator` -> ... -> a leaf identifier) to the leaf name - shared by function/
+    struct naming (below) and top-level declaration/typedef/macro naming
+    (`_first_bound_name`), which all bottom out at the same declarator shape.
+    `destructor_name`/`operator_name`/`field_identifier` are C++-only leaf shapes (a
+    destructor `~Foo`, an operator overload `operator+`, a method inside a class body) -
+    harmless to check for on C/other-language trees since those node types never occur there.
+    `qualified_identifier` (`ClassName::Method`) is the out-of-class member function
+    definition shape - real, extremely common C++ (declare in the header, define in the
+    .cpp) - the ENTIRE node's own text is returned (not just its `name` field) so the class
+    qualifier isn't silently dropped, since this is a free-standing top-level definition, not
+    nested inside the class body the way an in-class method is."""
     while node is not None:
-        if node.type in ("identifier", "type_identifier"):
+        if node.type in ("identifier", "type_identifier", "destructor_name", "operator_name", "field_identifier"):
+            return source[node.start_byte:node.end_byte].decode("utf-8")
+        if node.type == "qualified_identifier":
             return source[node.start_byte:node.end_byte].decode("utf-8")
         node = node.child_by_field_name("declarator")
     return None
@@ -296,7 +374,7 @@ def _first_bound_name(node: Node, source: bytes) -> str | None:
         name_node = target.child_by_field_name("name")
         if name_node is not None:
             return source[name_node.start_byte:name_node.end_byte].decode("utf-8")
-    elif target.type in ("declaration", "type_definition", "preproc_def"):
+    elif target.type in ("declaration", "type_definition", "preproc_def", "alias_declaration"):
         return _c_declarator_name(target, source)
     return None
 
@@ -358,6 +436,8 @@ def chunk_file(path: Path) -> list[Chunk]:
         raise ValueError(f"Unsupported file extension: {path.suffix}")
 
     source = path.read_bytes()
+    if spec in (C_LANG, CPP_LANG):
+        source = _strip_export_macros(source)
     parser = Parser(spec.language)
     tree = parser.parse(source)
 

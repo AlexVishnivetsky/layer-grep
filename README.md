@@ -23,8 +23,9 @@ differentiator.
 ## How it works
 
 1. **Chunking** — AST-based (tree-sitter), not fixed-size windows. Functions,
-   classes/structs, and methods for `.py`/`.js`/`.jsx`/`.ts`/`.tsx`/`.rs`;
-   adjacent top-level statements (constants, route registration blocks) get
+   classes/structs, and methods for `.py`/`.js`/`.jsx`/`.ts`/`.tsx`/`.rs`/`.c`/
+   `.h`/`.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`; adjacent top-level statements
+   (constants, route registration blocks) get
    grouped too, so plain data/config files aren't invisible to search. JSON
    files (e.g. translation catalogs) get both an exact literal lookup and
    adaptive size-budgeted chunking for semantic search.
@@ -50,14 +51,14 @@ differentiator.
 
 Not every feature is at full parity across languages yet.
 
-| Feature | Python | JavaScript/TypeScript | Rust | C |
-|---|---|---|---|---|
-| AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ | ✅ |
-| Layer/module classification (path & name based) | ✅ | ✅ | ✅ | ✅ |
-| Cross-layer literal linking | ✅ | ✅ | ✅ | ✅ |
-| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ✅ |
-| `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ |
-| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ❌ |
+| Feature | Python | JavaScript/TypeScript | Rust | C | C++ |
+|---|---|---|---|---|---|
+| AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Layer/module classification (path & name based) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Cross-layer literal linking | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ | ❌ |
+| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ❌ | ❌ |
 
 ## Install
 
