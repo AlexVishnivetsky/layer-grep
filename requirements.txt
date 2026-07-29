@@ -30,4 +30,4 @@ numpy==2.5.1
 tqdm==4.70.0                    # progress bar while indexing files
 
 # --- MCP wrapper (mcp_server.py) ---
-mcp[cli]==1.28.1
+mcp[cli]==2.0.0
