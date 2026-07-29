@@ -245,8 +245,19 @@ _CMAKE_NON_SOURCE_KEYWORDS = frozenset({
     # add_executable
     "WIN32", "MACOSX_BUNDLE",
 })
-# A variable reference (${...}) or generator expression ($<...>) - can't resolve either
-# without evaluating CMake, so any token matching this is treated as non-literal.
+# A generator expression ($<...>, CMake's own reserved syntax) is conventionally an
+# additive extra entry alongside otherwise-literal sources (e.g. PuTTY's
+# `$<TARGET_OBJECTS:logging>` mixed in with a dozen literal .c files) - dropping just this
+# one token is safe. A plain variable reference (${...}) is a different, much riskier
+# shape: real-world CMake very commonly builds the *entire* source list into one variable
+# first (`list(APPEND uv_sources ...)` then `add_library(uv SHARED ${uv_sources})`, seen
+# verbatim in libuv) - if a call mixes one such reference with an incidental literal token
+# (e.g. libuv's `add_executable(uv_run_tests ${uv_test_sources} uv_win_longpath.manifest)`),
+# dropping only the variable token and keeping the literal one produces a badly misleading
+# result (a "complete-looking" 1-file module for a target that really has ~150 sources) -
+# worse than not detecting the target at all. So a bare `${...}` (or any other `$`/`{`/`}`/
+# `<`/`>` shape that isn't a `$<...>` generator expression) aborts the whole target instead.
+_CMAKE_GENERATOR_EXPR_RE = re.compile(r"\$<")
 _CMAKE_DYNAMIC_TOKEN_RE = re.compile(r"[${}<>]")
 
 
@@ -305,12 +316,19 @@ def _find_cmake_targets(project_root: Path) -> list[tuple[str, list[str]]]:
     (e.g. curl's real libcurl/CLI targets, all declared via
     `add_library(${LIB_STATIC} ...)` - expected to go undetected here, not a bug to chase;
     nothing downstream is resolvable without evaluating CMake once the name itself isn't
-    literal). Individual *source* tokens that aren't literal are dropped one at a time
-    rather than discarding the whole target - real-world calls often mix a handful of
-    literal sources with one dynamic entry (e.g. PuTTY's
-    `$<TARGET_OBJECTS:logging>` alongside a dozen literal .c files in the same call) -  a
-    target left with zero real sources this way is skipped by the empty-result check
-    below, so no separate all-or-nothing rule is needed.
+    literal). Among the *source* tokens, a `$<...>` generator expression is dropped
+    individually (real-world calls often mix a handful of literal sources with one such
+    additive entry, e.g. PuTTY's `$<TARGET_OBJECTS:logging>` alongside a dozen literal .c
+    files) - but a bare `${...}` variable reference aborts the *whole* target instead of
+    just that token: real CMake very commonly builds the entire source list into one
+    variable first (`list(APPEND uv_sources ...)` then `add_library(uv SHARED
+    ${uv_sources})`, seen verbatim in libuv), so keeping whatever incidental literal token
+    happens to sit alongside it would produce a confidently-wrong, badly incomplete result
+    (libuv's real `add_executable(uv_run_tests ${uv_test_sources}
+    uv_win_longpath.manifest)` would otherwise report a "complete-looking" 1-file target
+    for something that really has ~150 sources) - worse than not detecting it at all. A
+    target left with zero real sources (either from this abort or from every token being a
+    dropped keyword/generator-expression) is skipped by the empty-result check below.
 
     Multiple manifests declaring the same target name are merged (union of basenames),
     not treated as a collision - the expected, common case for cross-platform C, e.g.
@@ -336,13 +354,19 @@ def _find_cmake_targets(project_root: Path) -> list[tuple[str, list[str]]]:
             if _CMAKE_DYNAMIC_TOKEN_RE.search(name):
                 continue
             basenames = []
+            has_bare_variable_reference = False
             for token in rest:
-                if token in _CMAKE_NON_SOURCE_KEYWORDS or _CMAKE_DYNAMIC_TOKEN_RE.search(token):
+                if token in _CMAKE_NON_SOURCE_KEYWORDS:
                     continue
+                if _CMAKE_GENERATOR_EXPR_RE.search(token):
+                    continue
+                if _CMAKE_DYNAMIC_TOKEN_RE.search(token):
+                    has_bare_variable_reference = True
+                    break
                 source_path = cmake_path.parent / token
                 if source_path.is_file():
                     basenames.append(source_path.name)
-            if not basenames:
+            if has_bare_variable_reference or not basenames:
                 continue
             existing = targets.setdefault(name, [])
             for basename in basenames:

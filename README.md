@@ -198,7 +198,14 @@ from directory naming — a named CMake target is a sibling deliverable
 recurring architectural role. A target built from a variable name (e.g.
 `add_library(${LIB_NAME} ...)`, common in larger CMake projects) can't be
 resolved this way and is skipped — a directory-naming-based layer guess
-may still catch it. `layergrep calibrate-thresholds` reports the real
+may still catch it. Same caution applies to individual source arguments:
+a `$<...>` generator expression is dropped on its own (usually one extra
+entry alongside otherwise-literal sources), but a bare `${...}` variable
+reference aborts the whole target instead of just that argument — real
+CMake very commonly builds an entire source list into one variable first,
+and keeping whatever incidental literal token happens to sit next to it
+would report a confidently-wrong, badly incomplete file list rather than
+correctly detecting nothing. `layergrep calibrate-thresholds` reports the real
 match-count distribution for the
 `literal_noise_threshold`/`import_noise_threshold` fields on an already-
 indexed project, instead of leaving you to guess whether the defaults (tuned

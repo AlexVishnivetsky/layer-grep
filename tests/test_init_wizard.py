@@ -238,6 +238,20 @@ def test_find_cmake_targets_drops_only_dynamic_source_tokens(tmp_path, write_fil
     assert targets == [("network", ["errsock.c", "proxy.c"])]
 
 
+def test_find_cmake_targets_aborts_whole_target_on_bare_variable_reference(tmp_path, write_file):
+    # real bug found validating against libuv: `add_executable(uv_run_tests
+    # ${uv_test_sources} uv_win_longpath.manifest)` builds its entire ~150-file source list
+    # into one variable first (list(APPEND uv_test_sources ...)) - dropping only the
+    # variable token and keeping the incidental literal one would report a
+    # "complete-looking" 1-file target that's actually missing ~150 real sources, worse
+    # than not detecting it at all. Unlike a $<...> generator expression (additive, safe to
+    # drop alone), a bare ${...} variable reference must abort the whole target.
+    write_file(tmp_path, "CMakeLists.txt",
+               "add_executable(myapp ${SOURCES} main.c)\n")
+    write_file(tmp_path, "main.c", "int main(void) { return 0; }\n")
+    assert init_wizard._find_cmake_targets(tmp_path) == []
+
+
 def test_find_cmake_targets_skips_interface_target_with_no_real_sources(tmp_path, write_file):
     write_file(tmp_path, "CMakeLists.txt", "add_library(header_only INTERFACE)\n")
     assert init_wizard._find_cmake_targets(tmp_path) == []
