@@ -181,6 +181,32 @@ def test_suggest_config_c_heuristics_skipped_without_c(tmp_path, write_file):
     assert "platform" not in layer_names
 
 
+def test_suggest_config_cpp_conventional_dirs(tmp_path, write_file):
+    # a pure C++ project (no .c files at all) still gets the C-family layer candidates -
+    # this is the same "C-family project" convention, not distinctly a C one
+    write_file(tmp_path, "include/mylib.hpp", "class Widget {};\n")
+    write_file(tmp_path, "src/mylib.cpp", "int foo() { return 1; }\n")
+    write_file(tmp_path, "tests/test_mylib.cpp", "int main() { return 0; }\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    layer_names = {l["name"] for l in draft["layers"]}
+    assert {"include", "tests"} <= layer_names
+    assert "C++" in draft["_detected_languages"]
+
+
+def test_suggest_config_c_and_cpp_together_do_not_duplicate_layers(tmp_path, write_file):
+    # a real, common combination: plain .h headers (flags "C") alongside .cpp sources (flags
+    # "C++") in the same project - the shared C-family dict must apply exactly once, not
+    # once per detected language
+    write_file(tmp_path, "include/mylib.h", "void foo(void);\n")
+    write_file(tmp_path, "src/mylib.cpp", "void foo() {}\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    assert {"C", "C++"} <= set(draft["_detected_languages"])
+    by_name: dict[str, list] = {}
+    for entry in draft["layers"]:
+        by_name.setdefault(entry["name"], []).append(entry)
+    assert len(by_name["include"]) == 1
+
+
 def test_write_draft_config_writes_when_absent(tmp_path):
     draft = {"layers": [], "default_layer": "backend/other", "translations": {"files": []},
               "extra_excluded_dirs": []}

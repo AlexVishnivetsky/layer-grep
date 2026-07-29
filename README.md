@@ -39,7 +39,7 @@ differentiator.
    overall — the reason results don't collapse into a single dominant
    category), then two structural expansion passes: the import graph
    (handler → model/config/constants it imports — Python, JavaScript/
-   TypeScript, Rust, and C, see [Language support](#language-support)) and
+   TypeScript, Rust, C, and C++, see [Language support](#language-support)) and
    shared string literals across layers (language-agnostic, works
    everywhere — e.g. a route path used by both a JS frontend and a Python
    backend).
@@ -56,8 +56,8 @@ Not every feature is at full parity across languages yet.
 | AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Layer/module classification (path & name based) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Cross-layer literal linking | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ✅ | ❌ |
-| `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ❌ | ❌ |
 
 ## Install

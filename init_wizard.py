@@ -68,18 +68,25 @@ _RUST_LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
 _TRANSLATIONS_DIR_CANDIDATES = ["langs", "locales", "i18n", "translations"]
 _FRONTEND_EXTENSIONS = {".jsx", ".tsx"}
 
-# C-specific layer candidates - the web-framework dict above doesn't apply (a C codebase has
-# no "views.py"/"models.py"-style naming), and unlike Rust there's no single dominant
-# ecosystem-wide project generator either, so these are genuine cross-project C conventions
-# instead: "include" (public headers, separate from "src"'s implementation) is close to
-# universal, "tests"/"test" likewise (both spellings seen in real projects - curl uses
-# "tests", PuTTY uses "test"). "platform" was added after inspecting real GUI-shaped C
-# projects (PuTTY): native cross-platform C apps split their platform/GUI integration code
-# into dedicated directories (windows/unix/gtk/macosx/...) the same way a web project splits
-# out "frontend" - this is the closest C analogue to that layer, not something the issue text
-# called out explicitly but confirmed empirically. "vendor" makes bundled third-party code its
-# own visible layer instead of only ever being silently excluded (extra_excluded_dirs) - for a
-# project that wants to *see* vendored code as its own bucket rather than hide it entirely.
+# C/C++-family layer candidates - the web-framework dict above doesn't apply (a C/C++
+# codebase has no "views.py"/"models.py"-style naming), and unlike Rust there's no single
+# dominant ecosystem-wide project generator either, so these are genuine cross-project
+# conventions instead: "include" (public headers, separate from "src"'s implementation) is
+# close to universal, "tests"/"test" likewise (both spellings seen in real projects - curl
+# uses "tests", PuTTY uses "test"). "platform" was added after inspecting real GUI-shaped C
+# projects (PuTTY): native cross-platform C/C++ apps split their platform/GUI integration
+# code into dedicated directories (windows/unix/gtk/macosx/...) the same way a web project
+# splits out "frontend" - this is the closest C/C++ analogue to that layer, not something the
+# issue text called out explicitly but confirmed empirically. "vendor" makes bundled
+# third-party code its own visible layer instead of only ever being silently excluded
+# (extra_excluded_dirs) - for a project that wants to *see* vendored code as its own bucket
+# rather than hide it entirely.
+#
+# Shared verbatim between C and C++ (issue #24): this is really "a C-family project"
+# convention, not distinctly a C or a C++ one - a namespace-based layer signal (the one
+# genuinely C++-specific idea worth considering) isn't expressible through directory/file
+# naming at all (namespaces are a source-level construct, not a filesystem one) and would
+# need real AST inspection, not init_wizard.py's name-matching approach - out of scope here.
 _C_LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
     "include": {"dirs": ["include", "inc", "public"], "files": []},
     "tests": {"dirs": ["tests", "test"], "files": []},
@@ -94,13 +101,18 @@ _C_LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
 # "Rust", which also gates whether the Cargo.toml-driven heuristic below bothers running -
 # scanning for manifests on every init-config call would be wasted work on a project with no
 # Rust in it at all. "C" covers both .c and .h - a header alone (no .c anywhere near it) still
-# counts, since a header-only C library is a real and not even particularly rare case.
+# counts, since a header-only C library is a real and not even particularly rare case. "C++"
+# deliberately does NOT include .h (already covered by "C" - a project can easily have both
+# flags true at once, e.g. a C++ project using plain .h headers alongside .cpp sources; see
+# _C_LAYER_STRUCTURE_CANDIDATES's single shared application below, gated on either being true,
+# not each independently - applying the same dict twice would double every matched layer).
 _LANGUAGE_EXTENSIONS: dict[str, frozenset[str]] = {
     "Python": frozenset({".py"}),
     "JavaScript": frozenset({".js", ".jsx"}),
     "TypeScript": frozenset({".ts", ".tsx"}),
     "Rust": frozenset({".rs"}),
     "C": frozenset({".c", ".h"}),
+    "C++": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}),
 }
 
 
@@ -256,7 +268,10 @@ def suggest_project_config(project_root: Path) -> dict:
         for bin_name, file_basename in _find_rust_bin_targets(project_root):
             layers.append({"name": bin_name, "dirs": [], "files": [file_basename]})
 
-    if "C" in detected_languages:
+    # "C" and "C++" share this single application (not one `if` block per language) - both
+    # being true at once is common (plain .h headers alongside .cpp sources), and applying
+    # the same dict under each language's own `if` would double every matched layer entry.
+    if "C" in detected_languages or "C++" in detected_languages:
         for layer_name, candidates in _C_LAYER_STRUCTURE_CANDIDATES.items():
             matched_dirs = [dir_names[c] for c in candidates["dirs"] if c in dir_names]
             matched_files = [file_names[c] for c in candidates["files"] if c in file_names]
