@@ -109,6 +109,15 @@ _t_db = time.monotonic()
 _CONN = db_schema.open_db(DB_PATH, MODEL_NAME, PROJECT_ROOT)
 logger.info(f"db connection opened after {time.monotonic() - _t_db:.3f}s")
 
+# Read once at startup (issue #37) - open_db() above already flagged whether it just wiped
+# real, already-indexed rows due to a version bump. Kept as a mutable module-level variable
+# (not re-read from the db on every call) so index_codebase() can clear it in-process the
+# moment a real reindex actually runs, without needing another db round-trip per layergrep()
+# call just to check.
+_pending_reindex_notice = db_schema.get_pending_reindex_notice(_CONN)
+if _pending_reindex_notice is not None:
+    logger.warning(f"server startup: {_pending_reindex_notice}")
+
 
 def _connect():
     return _CONN
@@ -194,6 +203,10 @@ def layergrep(query: str) -> str:
         raise
     logger.info(f"layergrep done query={query!r} took={time.monotonic() - t0:.3f}s "
                 f"literal_hits={len(result['literal'])} json_literal_hits={len(result['json_literal'])}")
+    if _pending_reindex_notice is not None:
+        # Prepended on every call, not just once - the underlying problem (a stale index)
+        # doesn't go away on its own, only index_codebase() actually fixes it (see there).
+        return f"NOTE: {_pending_reindex_notice}\n\n{formatted}"
     return formatted
 
 
@@ -243,6 +256,15 @@ def index_codebase(force: bool = False) -> str:
     except Exception:
         logger.exception(f"index_codebase FAILED force={force} after {time.monotonic() - t0:.3f}s")
         raise
+
+    # A real reindex just ran - whatever version-triggered wipe open_db() may have flagged at
+    # startup is addressed now. Clears both the persisted notice (so a future server restart
+    # doesn't see it again) and this process's own copy (so layergrep() stops prepending it
+    # for the rest of this session, without an extra db round-trip per call).
+    global _pending_reindex_notice
+    if _pending_reindex_notice is not None:
+        db_schema.clear_pending_reindex_notice(conn)
+        _pending_reindex_notice = None
 
     logger.info(f"index_codebase done force={force} took={time.monotonic() - t0:.3f}s: "
                 + " | ".join(lines))

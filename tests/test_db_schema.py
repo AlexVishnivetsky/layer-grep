@@ -132,7 +132,7 @@ def test_apply_version_migration_calls_callback_on_mismatch(tmp_path):
     conn.commit()
 
     calls = []
-    db_schema._apply_version_migration(conn, "some_version", 3, lambda c: calls.append(c))
+    db_schema._apply_version_migration(conn, "some_version", 3, lambda c: calls.append(c) or 1)
 
     assert calls == [conn]
     assert conn.execute("SELECT value FROM meta WHERE key = 'some_version'").fetchone()[0] == "3"
@@ -157,10 +157,24 @@ def test_apply_version_migration_reruns_on_version_bump(tmp_path):
     conn.commit()
 
     calls = []
-    db_schema._apply_version_migration(conn, "some_version", 4, lambda c: calls.append(c))
+    db_schema._apply_version_migration(conn, "some_version", 4, lambda c: calls.append(c) or 1)
 
     assert calls == [conn]
     assert conn.execute("SELECT value FROM meta WHERE key = 'some_version'").fetchone()[0] == "4"
+
+
+def test_apply_version_migration_returns_true_only_when_callback_wiped_something(tmp_path):
+    # issue #37: the return value drives whether a "you should reindex" notice gets recorded -
+    # a version mismatch that had nothing real to wipe (e.g. a brand-new project, or a
+    # brand-new extension group with zero matching files yet) must not report True
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.commit()
+
+    assert db_schema._apply_version_migration(conn, "some_version", 1, lambda c: 0) is False
+
+    conn.execute("UPDATE meta SET value = '1'")
+    assert db_schema._apply_version_migration(conn, "some_version", 2, lambda c: 3) is True
 
 
 def test_wipe_for_imports_version_group_only_touches_its_own_extensions(tmp_path):
@@ -199,3 +213,65 @@ def test_open_db_migrates_each_import_version_group_independently(tmp_path, writ
         ).fetchone()
         assert row is not None
     conn.close()
+
+
+def test_open_db_fresh_project_produces_no_pending_reindex_notice(tmp_path):
+    # a brand-new db has nothing to "re"-index yet - every version key starts at `row is
+    # None`, which must NOT be mistaken for "something just got wiped" (issue #37)
+    conn = _make_conn(tmp_path)
+    assert db_schema.get_pending_reindex_notice(conn) is None
+    conn.close()
+
+
+def test_open_db_records_notice_when_an_existing_group_actually_gets_wiped(tmp_path, write_file):
+    write_file(tmp_path, "a.py", "import os\n")
+    conn = _make_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO files (path, content_hash) VALUES (?, 'h')", (str(tmp_path / "a.py"),)
+    )
+    # simulate "layergrep code changed since this was indexed" - downgrade the stamped
+    # version for a group this project actually has a file in
+    conn.execute("UPDATE meta SET value = '0' WHERE key = 'imports_version_python'")
+    conn.commit()
+    conn.close()
+
+    conn2 = _make_conn(tmp_path)
+    notice = db_schema.get_pending_reindex_notice(conn2)
+    assert notice is not None
+    assert "imports:python" in notice
+    conn2.close()
+
+
+def test_open_db_no_notice_when_bumped_group_has_no_matching_files(tmp_path, write_file):
+    # the false-positive guard: a version bump for a group with zero files of that type in
+    # this project (e.g. rust, in a pure-Python project) must not produce a notice - there's
+    # really nothing to reindex
+    write_file(tmp_path, "a.py", "import os\n")
+    conn = _make_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO files (path, content_hash) VALUES (?, 'h')", (str(tmp_path / "a.py"),)
+    )
+    conn.execute("UPDATE meta SET value = '0' WHERE key = 'imports_version_rust'")
+    conn.commit()
+    conn.close()
+
+    conn2 = _make_conn(tmp_path)
+    assert db_schema.get_pending_reindex_notice(conn2) is None
+    conn2.close()
+
+
+def test_clear_pending_reindex_notice_removes_it(tmp_path, write_file):
+    write_file(tmp_path, "a.py", "import os\n")
+    conn = _make_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO files (path, content_hash) VALUES (?, 'h')", (str(tmp_path / "a.py"),)
+    )
+    conn.execute("UPDATE meta SET value = '0' WHERE key = 'imports_version_python'")
+    conn.commit()
+    conn.close()
+
+    conn2 = _make_conn(tmp_path)
+    assert db_schema.get_pending_reindex_notice(conn2) is not None
+    db_schema.clear_pending_reindex_notice(conn2)
+    assert db_schema.get_pending_reindex_notice(conn2) is None
+    conn2.close()
