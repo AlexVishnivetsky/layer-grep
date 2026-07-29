@@ -16,7 +16,7 @@ from tree_sitter import Language, Node, Parser
 # new node handling, etc.) - indexer.py compares this against what a .db was built with and
 # forces a full reindex on mismatch, since file-content hashes alone can't detect that a def
 # unchanged in the codebase should now be re-chunked differently.
-CHUNKER_VERSION = 7
+CHUNKER_VERSION = 8
 
 FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function"})
 
@@ -520,6 +520,14 @@ def chunk_file(path: Path) -> list[Chunk]:
                 chunks.append(make_chunk(node, "function", name, comments))
             else:
                 append_to_block(node, comments, index)
+        elif node.type == "expression_statement" and node.named_child_count == 0:
+            # A bare `;` (null statement, zero named children) - not a deliberate statement
+            # in practice, but an ERROR-recovery artifact: tree-sitter-c can't parse a custom
+            # macro used as a GCC attribute annotation (e.g. `PRINTF_LIKE(2, 3)` wrapping
+            # `__attribute__((format(printf,...)))`), so it splits the whole declaration into
+            # an ERROR node (left un-chunked below, correctly) plus this leftover semicolon.
+            # Carries no information regardless of language - skip rather than sweep it.
+            continue
         elif node.type in IGNORED_TOP_LEVEL_TYPES:
             continue
         elif node.type in SWEEPABLE_TOP_LEVEL_TYPES:

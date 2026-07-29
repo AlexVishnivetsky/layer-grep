@@ -451,6 +451,26 @@ def test_c_function_prototype_swept_as_block(tmp_path, write_file):
     assert "free_thing" in chunks[0].text
 
 
+def test_c_gcc_attribute_macro_leftover_semicolon_not_swept(tmp_path, write_file):
+    """tree-sitter-c can't parse a custom macro used as a GCC attribute annotation (only the
+    literal __attribute__/__declspec spelling) - `PRINTF_LIKE(2, 3)` after a declaration
+    splits into an ERROR node (correctly left un-chunked) plus a leftover bare `;`
+    (expression_statement with zero named children) that must not be swept as a data block."""
+    src = (
+        "void report(const char *fmt, ...)\n"
+        "    PRINTF_LIKE(1, 2);\n"
+        "\n"
+        "int real_func(void) {\n"
+        "    return 1;\n"
+        "}\n"
+    )
+    p = write_file(tmp_path, "mod.h", src)
+    chunks = chunk_file(p)
+    assert len(chunks) == 1
+    assert chunks[0].name == "real_func"
+    assert all(";" != c.text.strip() for c in chunks)
+
+
 def test_c_global_declaration_swept_as_block(tmp_path, write_file):
     src = "const int GLOBAL_CONST = 42;\nstatic int counter = 0;\n"
     p = write_file(tmp_path, "mod.c", src)
