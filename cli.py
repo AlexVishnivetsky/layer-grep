@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -65,6 +66,9 @@ def _run_index(argv: list[str]) -> None:
             print(f"[{rel_path}] changed={json_stats['changed']} "
                   f"entries={json_stats['new_entries']} chunks={json_stats['new_chunks']}")
 
+    # A real reindex just ran - whatever version-triggered wipe open_db() may have flagged
+    # is addressed now, regardless of how it got flagged.
+    db_schema.clear_pending_reindex_notice(conn)
     print(f"db: {db_path}")
 
 
@@ -79,6 +83,15 @@ def _run_init_config(argv: list[str]) -> None:
     print(json.dumps(draft, indent=2, ensure_ascii=False))
     print(file=sys.stderr)
     init_wizard.write_draft_config(project_root, draft)
+
+
+def _warn_if_stale(conn: sqlite3.Connection) -> None:
+    """Shared by any command that reads an already-built index without itself reindexing
+    (search, calibrate-thresholds) - `layergrep index` clears this notice itself instead,
+    since it's the one command that actually addresses it."""
+    notice = db_schema.get_pending_reindex_notice(conn)
+    if notice is not None:
+        print(f"warning: {notice}", file=sys.stderr)
 
 
 def _run_calibrate_thresholds(argv: list[str]) -> None:
@@ -98,6 +111,7 @@ def _run_calibrate_thresholds(argv: list[str]) -> None:
         sys.exit(1)
 
     conn = db_schema.open_db(db_path, model_name, project_root)
+    _warn_if_stale(conn)
     project_config = pconfig.load_project_config(project_root)
 
     literal_counts = calibration.literal_match_counts(conn, sample=args.sample)
@@ -140,6 +154,7 @@ def _run_search(argv: list[str]) -> None:
         sys.exit(1)
 
     conn = db_schema.open_db(db_path, model_name, project_root)
+    _warn_if_stale(conn)
     result = search.search_hybrid(conn, args.query, project_root, model_name=model_name, k_per_layer=args.k,
                                    expand_imports=not args.no_expand)
     print(search.format_results(args.query, result))

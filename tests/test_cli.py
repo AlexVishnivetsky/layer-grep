@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -91,6 +92,27 @@ def test_calibrate_thresholds_reports_current_values_and_distribution(tmp_path, 
     assert result.returncode == 0
     assert "currently configured: 30" in result.stdout
     assert "currently configured: 15" in result.stdout
+
+
+@pytest.mark.slow
+def test_search_warns_when_index_version_stale_and_index_run_clears_it(tmp_path, write_file):
+    write_file(tmp_path, "a.py", "def update_task_status(user_id):\n    return user_id\n")
+    run_cli("index", "--root", str(tmp_path))
+    db_path = tmp_path / ".layergrep" / "multilingual-e5-small.db"
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE meta SET value = '0' WHERE key = 'imports_version_python'")
+    conn.commit()
+    conn.close()
+
+    stale_search = run_cli("update_task_status", "--root", str(tmp_path))
+    assert stale_search.returncode == 0
+    assert "warning:" in stale_search.stderr
+    assert "imports:python" in stale_search.stderr
+
+    run_cli("index", "--root", str(tmp_path))
+    clean_search = run_cli("update_task_status", "--root", str(tmp_path))
+    assert "warning:" not in clean_search.stderr
 
 
 @pytest.mark.slow
