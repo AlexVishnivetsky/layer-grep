@@ -354,6 +354,40 @@ def test_c_unresolvable_quoted_include_yields_no_edge(tmp_path, write_file):
     assert edges == []
 
 
+def test_c_include_resolves_by_unique_basename_across_project(tmp_path, write_file):
+    # Unreal Engine's Public/Private module split: a .cpp in Private/ includes its sibling
+    # header by bare name, relying on the module's own Public/ dir being a registered
+    # compiler include path - not "relative to the including file" at all. Recovered without
+    # knowing the actual search path: unique basename anywhere in the project.
+    write_file(tmp_path, "Public/Widget.h", "class Widget {};\n")
+    src = write_file(tmp_path, "Private/Widget.cpp", '#include "Widget.h"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "Public" / "Widget.h"
+
+
+def test_c_include_ambiguous_basename_yields_no_edge(tmp_path, write_file):
+    # two unrelated files share a basename (a real, if less common, occurrence - e.g.
+    # abseil-cpp has three unrelated config.h files) - picking one would risk a confidently
+    # wrong edge, so this must give up rather than guess
+    write_file(tmp_path, "moduleA/config.h", "int a;\n")
+    write_file(tmp_path, "moduleB/config.h", "int b;\n")
+    src = write_file(tmp_path, "main.cpp", '#include "config.h"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_c_include_relative_resolution_takes_priority_over_basename_fallback(tmp_path, write_file):
+    # when the file actually IS relative to the including file, that's used directly - the
+    # basename index (which could point elsewhere, or be ambiguous) is never even consulted
+    write_file(tmp_path, "helpers.h", "// the real, relative one\n")
+    write_file(tmp_path, "other/helpers.h", "// a same-named decoy elsewhere\n")
+    src = write_file(tmp_path, "main.c", '#include "helpers.h"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.h"
+
+
 def test_c_no_includes_yields_no_edges(tmp_path, write_file):
     src = write_file(tmp_path, "main.c", "int main(void) { return 0; }\n")
     edges = extract_c_imports(src, tmp_path)
@@ -374,3 +408,34 @@ def test_c_include_inside_header_guard_still_found(tmp_path, write_file):
     edges = extract_c_imports(src, tmp_path)
     assert len(edges) == 1
     assert edges[0].target == tmp_path / "helpers.h"
+
+
+def test_cpp_quoted_include_resolves_relative_to_including_file(tmp_path, write_file):
+    write_file(tmp_path, "helpers.hpp", "int foo();\n")
+    src = write_file(tmp_path, "main.cpp", '#include "helpers.hpp"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.hpp"
+
+
+def test_cpp_angle_bracket_include_yields_no_edge(tmp_path, write_file):
+    # a standard-library header via the compiler's own search path - same treatment as C
+    src = write_file(tmp_path, "main.cpp", "#include <string>\n")
+    edges = extract_c_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_cpp_quoted_include_subdirectory_path(tmp_path, write_file):
+    write_file(tmp_path, "detail/helpers.hpp", "int foo();\n")
+    src = write_file(tmp_path, "src/main.cc", '#include "../detail/helpers.hpp"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "detail" / "helpers.hpp"
+
+
+def test_extract_imports_dispatches_cpp_extensions(tmp_path, write_file):
+    write_file(tmp_path, "helpers.hpp", "int foo();\n")
+    src = write_file(tmp_path, "main.cxx", '#include "helpers.hpp"\n')
+    edges = extract_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.hpp"

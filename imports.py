@@ -5,20 +5,23 @@ from pathlib import Path
 
 from tree_sitter import Node, Parser
 
-from chunker import C_LANG, EXTENSION_LANGS, PY_LANG, RUST_LANG
+from chunker import EXTENSION_LANGS, PY_LANG, RUST_LANG
 
 # Bump on any change to extract_python_imports()/extract_js_imports()/extract_rust_imports()/
 # extract_c_imports() that would resolve the same source differently, or when a new extension
 # gains import-graph support (existing already-hashed-unchanged files of that extension would
 # otherwise never get (re)processed - see db_schema._wipe_for_imports_version(), which reads
 # this same list) - mirrors chunker.CHUNKER_VERSION's role for code chunking.
-IMPORTS_VERSION = 5
+IMPORTS_VERSION = 7
 
 # Every extension extract_imports() knows how to handle - the single source of truth for
 # both indexer.py's per-file dispatch and db_schema.py's version-migration wipe (which needs
 # to know which already-indexed files must be force-reprocessed, not just re-derive its own
 # copy of this list and risk it drifting out of sync).
-IMPORT_GRAPH_EXTENSIONS = frozenset({".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".c", ".h"})
+IMPORT_GRAPH_EXTENSIONS = frozenset({
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".c", ".h",
+    ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+})
 
 
 @dataclass(frozen=True)
@@ -501,15 +504,57 @@ def extract_rust_imports(path: Path, project_root: Path) -> list[ImportEdge]:
     return edges
 
 
-def _resolve_c_include(specifier: str, from_file: Path) -> Path | None:
+_C_FAMILY_EXTENSIONS = frozenset({".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"})
+_C_SCAN_EXCLUDED_DIRS = frozenset({".git", "node_modules"})
+
+
+def _build_c_basename_index(project_root: Path) -> dict[str, list[Path]]:
+    """Every C/C++ file's bare filename -> every path in the project bearing it - built once
+    per project (see _c_basename_index's cache) to back _resolve_c_include's fallback."""
+    index: dict[str, list[Path]] = {}
+    for p in project_root.rglob("*"):
+        if any(part in _C_SCAN_EXCLUDED_DIRS for part in p.relative_to(project_root).parts):
+            continue
+        if p.is_file() and p.suffix.lower() in _C_FAMILY_EXTENSIONS:
+            index.setdefault(p.name, []).append(p)
+    return index
+
+
+_C_BASENAME_INDEX_CACHE: dict[Path, dict[str, list[Path]]] = {}
+
+
+def _c_basename_index(project_root: Path) -> dict[str, list[Path]]:
+    """Cached per (resolved) project_root for the process's lifetime - same "rebuild on next
+    process start" tradeoff as _rust_project/project_config._PROJECT_CONFIG_CACHE for the
+    long-lived MCP server: adding/removing/renaming a file mid-session needs a restart to be
+    picked up here, not just a re-index."""
+    resolved = project_root.resolve()
+    if resolved not in _C_BASENAME_INDEX_CACHE:
+        _C_BASENAME_INDEX_CACHE[resolved] = _build_c_basename_index(resolved)
+    return _C_BASENAME_INDEX_CACHE[resolved]
+
+
+def _resolve_c_include(specifier: str, from_file: Path, project_root: Path) -> Path | None:
     """Quoted `#include "foo.h"` - resolved relative to the including file's own directory,
     the first place a real C compiler looks for a quoted include before falling back to any
     project-specific `-I` search paths. Those extra search paths aren't discoverable from the
     source tree alone (build-system-specific compiler flags, not something layergrep has
-    visibility into) - left unresolved for now, same "give up, no edge" treatment as an
-    external Python package or an unresolved JS bare specifier."""
+    visibility into) directly - but a very common real-world instance of this (e.g. Unreal
+    Engine's Public/Private module split, where a .cpp in Private/ includes its sibling header
+    by bare name, relying on the module's own Public/ dir being one of its registered include
+    paths - confirmed on a real UE project, issue #22) can be recovered without knowing the
+    actual search path at all: fall back to matching by bare filename anywhere in the project.
+    Only used when there's EXACTLY ONE file in the whole project with that basename - if there
+    are several (a real, if less common, occurrence - e.g. abseil-cpp has three unrelated
+    config.h files across different subsystems), picking one would risk a confidently wrong
+    edge, so this deliberately gives up rather than guesses, same "give up, no edge" precedent
+    as an external Python package or an unresolved JS bare specifier."""
     candidate = (from_file.parent / specifier).resolve()
-    return candidate if candidate.is_file() else None
+    if candidate.is_file():
+        return candidate
+    basename = Path(specifier).name
+    matches = _c_basename_index(project_root).get(basename, [])
+    return matches[0] if len(matches) == 1 else None
 
 
 def extract_c_imports(path: Path, project_root: Path) -> list[ImportEdge]:
@@ -519,11 +564,22 @@ def extract_c_imports(path: Path, project_root: Path) -> list[ImportEdge]:
     own search path) is left unresolved, same treatment as an external Python package - no
     project-agnostic way to know a compiler's system include paths.
 
-    `project_root` is unused here (a quoted include only ever resolves relative to the
-    including file, same reasoning as extract_js_imports) - kept in the signature so
-    extract_imports() can dispatch to any extractor uniformly."""
+    Shared verbatim between C and C++ (issue #22): `#include` is identical across both
+    languages (a preprocessor-level construct, not a language-level one), and tree-sitter-c/
+    tree-sitter-cpp produce the exact same `preproc_include`/`string_literal`/
+    `system_lib_string` shape for it - verified directly against the real grammar, not
+    assumed. `EXTENSION_LANGS` (not a hardcoded `C_LANG`) picks the right grammar for
+    whichever extension this file actually is, so this one function serves both dispatch
+    entries below without duplicating a byte of logic. C++ has no module-per-file mapping
+    the way Rust's `use` does (barring C++20 modules - a genuinely different, much newer
+    mechanism real-world C++ overwhelmingly doesn't use yet) - so no per-file tree is needed
+    here, unlike extract_rust_imports.
+
+    `project_root` backs _resolve_c_include's bare-filename fallback (see its own docstring)
+    for the common case where a quoted include isn't actually relative to the including
+    file, but to an extra compiler search path this function has no other way to discover."""
     source = path.read_bytes()
-    parser = Parser(C_LANG.language)
+    parser = Parser(EXTENSION_LANGS[path.suffix.lower()].language)
     tree = parser.parse(source)
 
     edges: list[ImportEdge] = []
@@ -535,7 +591,7 @@ def extract_c_imports(path: Path, project_root: Path) -> list[ImportEdge]:
                 content = next((c for c in path_node.children if c.type == "string_content"), None)
                 if content is not None:
                     specifier = _text(content, source)
-                    target = _resolve_c_include(specifier, path)
+                    target = _resolve_c_include(specifier, path, project_root)
                     if target is not None:
                         edges.append(ImportEdge(path, target, specifier))
         for c in node.children:
@@ -556,7 +612,7 @@ def extract_imports(path: Path, project_root: Path) -> list[ImportEdge]:
         return extract_js_imports(path, project_root)
     if suffix == ".rs":
         return extract_rust_imports(path, project_root)
-    if suffix in (".c", ".h"):
+    if suffix in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"):
         return extract_c_imports(path, project_root)
     return []
 
