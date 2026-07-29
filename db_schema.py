@@ -13,7 +13,7 @@ import model_config
 # instance) would otherwise shadow the module name within the same scope
 import project_config as pconfig
 from chunker import CHUNKER_VERSION
-from imports import IMPORT_GRAPH_EXTENSIONS, IMPORTS_VERSION
+from imports import IMPORT_VERSION_GROUPS, IMPORTS_VERSIONS
 from json_index import JSON_INDEX_VERSION
 
 logger = logging.getLogger("layergrep.db_schema")
@@ -30,7 +30,7 @@ def _apply_version_migration(
     on_mismatch: Callable[[sqlite3.Connection], None],
 ) -> None:
     """Shared shape for the "version stamped in meta, wipe-and-reprocess-on-mismatch"
-    pattern used by CHUNKER_VERSION/IMPORTS_VERSION/JSON_INDEX_VERSION. Factoring
+    pattern used by CHUNKER_VERSION/IMPORTS_VERSIONS (once per group)/JSON_INDEX_VERSION. Factoring
     "read meta -> compare -> wipe callback -> re-stamp -> commit" into one place means a
     future 4th versioned feature only has to write its own wipe logic, not duplicate the
     bookkeeping around it.
@@ -58,21 +58,24 @@ def _wipe_for_chunker_version(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM files")
 
 
-def _wipe_for_imports_version(conn: sqlite3.Connection) -> None:
-    # every file of an import-graph-covered extension needs reprocessing to (re)populate
-    # imports, not just ones already in the `imports` table - on the very first introduction
-    # of import-graph tracking that table starts empty, so scoping this to "already has
-    # import rows" would never force anything and silently leave the graph empty forever.
-    # Filtered in Python (not a chain of SQL LIKEs) against the same IMPORT_GRAPH_EXTENSIONS
-    # indexer.py dispatches on, so a newly-covered extension can't drift out of sync between
-    # the two call sites.
-    affected_paths = [
-        r[0] for r in conn.execute("SELECT path FROM files")
-        if Path(r[0]).suffix.lower() in IMPORT_GRAPH_EXTENSIONS
-    ]
-    conn.execute("DELETE FROM imports")
-    for p in affected_paths:
-        conn.execute("DELETE FROM files WHERE path = ?", (p,))
+def _make_wipe_for_imports_version_group(extensions: frozenset[str]) -> Callable[[sqlite3.Connection], None]:
+    """Builds a wipe callback scoped to just one import-version group's own extensions
+    (issue #35) - a version bump in one group (say, Rust) must not touch another group's
+    (say, Python's) already-correct `imports` rows, which is why this deletes per-path
+    rather than the old single-group code's unconditional `DELETE FROM imports`."""
+    def wipe(conn: sqlite3.Connection) -> None:
+        # every file of this group's extensions needs reprocessing to (re)populate imports,
+        # not just ones already in the `imports` table - on the very first introduction of
+        # import-graph tracking that table starts empty, so scoping this to "already has
+        # import rows" would never force anything and silently leave the graph empty forever.
+        affected_paths = [
+            r[0] for r in conn.execute("SELECT path FROM files")
+            if Path(r[0]).suffix.lower() in extensions
+        ]
+        for p in affected_paths:
+            conn.execute("DELETE FROM imports WHERE source_file = ?", (p,))
+            conn.execute("DELETE FROM files WHERE path = ?", (p,))
+    return wipe
 
 
 def _wipe_for_json_index_version(conn: sqlite3.Connection) -> None:
@@ -222,7 +225,14 @@ def open_db(db_path: Path, model_name: str, project_root: Path) -> sqlite3.Conne
     conn.execute("CREATE INDEX IF NOT EXISTS idx_imports_source ON imports(source_file)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(target_file)")
 
-    _apply_version_migration(conn, "imports_version", IMPORTS_VERSION, _wipe_for_imports_version)
+    # One migration per group (not one global one) - see IMPORT_VERSION_GROUPS/
+    # IMPORTS_VERSIONS in imports.py for why: a version bump in one language's resolver
+    # must not force reprocessing of every other language's already-correct import edges.
+    for group, version in IMPORTS_VERSIONS.items():
+        _apply_version_migration(
+            conn, f"imports_version_{group}", version,
+            _make_wipe_for_imports_version_group(IMPORT_VERSION_GROUPS[group]),
+        )
 
     # literal lookup side-table for JSON translations (json_index.literal_entries) - exact/
     # substring search, deliberately outside chunk_vectors: a short translation string gives

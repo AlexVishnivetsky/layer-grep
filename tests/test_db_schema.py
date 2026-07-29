@@ -161,3 +161,41 @@ def test_apply_version_migration_reruns_on_version_bump(tmp_path):
 
     assert calls == [conn]
     assert conn.execute("SELECT value FROM meta WHERE key = 'some_version'").fetchone()[0] == "4"
+
+
+def test_wipe_for_imports_version_group_only_touches_its_own_extensions(tmp_path):
+    # issue #35: a version bump in one group (e.g. rust) must not force reprocessing of, or
+    # drop the already-correct import edges belonging to, a completely different group
+    # (e.g. python) - the whole point of splitting the version by group in the first place
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE files (path TEXT PRIMARY KEY, content_hash TEXT NOT NULL)")
+    conn.execute("CREATE TABLE imports (id INTEGER PRIMARY KEY, source_file TEXT NOT NULL, "
+                  "target_file TEXT NOT NULL, module TEXT NOT NULL)")
+    py_file = str(tmp_path / "a.py")
+    rs_file = str(tmp_path / "b.rs")
+    conn.executemany("INSERT INTO files (path, content_hash) VALUES (?, 'h')", [(py_file,), (rs_file,)])
+    conn.executemany(
+        "INSERT INTO imports (source_file, target_file, module) VALUES (?, 'x', 'm')",
+        [(py_file,), (rs_file,)],
+    )
+    conn.commit()
+
+    wipe_rust_only = db_schema._make_wipe_for_imports_version_group(frozenset({".rs"}))
+    wipe_rust_only(conn)
+
+    assert conn.execute("SELECT COUNT(*) FROM files WHERE path = ?", (py_file,)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM imports WHERE source_file = ?", (py_file,)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM files WHERE path = ?", (rs_file,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM imports WHERE source_file = ?", (rs_file,)).fetchone()[0] == 0
+
+
+def test_open_db_migrates_each_import_version_group_independently(tmp_path, write_file):
+    write_file(tmp_path, "a.py", "import os\n")
+    write_file(tmp_path, "b.rs", "fn main() {}\n")
+    conn = _make_conn(tmp_path)
+    for group in db_schema.IMPORTS_VERSIONS:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (f"imports_version_{group}",)
+        ).fetchone()
+        assert row is not None
+    conn.close()
