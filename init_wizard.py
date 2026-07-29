@@ -68,15 +68,39 @@ _RUST_LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
 _TRANSLATIONS_DIR_CANDIDATES = ["langs", "locales", "i18n", "translations"]
 _FRONTEND_EXTENSIONS = {".jsx", ".tsx"}
 
+# C-specific layer candidates - the web-framework dict above doesn't apply (a C codebase has
+# no "views.py"/"models.py"-style naming), and unlike Rust there's no single dominant
+# ecosystem-wide project generator either, so these are genuine cross-project C conventions
+# instead: "include" (public headers, separate from "src"'s implementation) is close to
+# universal, "tests"/"test" likewise (both spellings seen in real projects - curl uses
+# "tests", PuTTY uses "test"). "platform" was added after inspecting real GUI-shaped C
+# projects (PuTTY): native cross-platform C apps split their platform/GUI integration code
+# into dedicated directories (windows/unix/gtk/macosx/...) the same way a web project splits
+# out "frontend" - this is the closest C analogue to that layer, not something the issue text
+# called out explicitly but confirmed empirically. "vendor" makes bundled third-party code its
+# own visible layer instead of only ever being silently excluded (extra_excluded_dirs) - for a
+# project that wants to *see* vendored code as its own bucket rather than hide it entirely.
+_C_LAYER_STRUCTURE_CANDIDATES: dict[str, dict[str, list[str]]] = {
+    "include": {"dirs": ["include", "inc", "public"], "files": []},
+    "tests": {"dirs": ["tests", "test"], "files": []},
+    "platform": {
+        "dirs": ["windows", "unix", "macosx", "mac", "linux", "gtk", "android", "ios", "win32"],
+        "files": [],
+    },
+    "vendor": {"dirs": ["third_party", "third-party", "vendor", "external", "deps"], "files": []},
+}
+
 # Purely informational (surfaced in the draft for a human to see at a glance) except for
 # "Rust", which also gates whether the Cargo.toml-driven heuristic below bothers running -
 # scanning for manifests on every init-config call would be wasted work on a project with no
-# Rust in it at all.
+# Rust in it at all. "C" covers both .c and .h - a header alone (no .c anywhere near it) still
+# counts, since a header-only C library is a real and not even particularly rare case.
 _LANGUAGE_EXTENSIONS: dict[str, frozenset[str]] = {
     "Python": frozenset({".py"}),
     "JavaScript": frozenset({".js", ".jsx"}),
     "TypeScript": frozenset({".ts", ".tsx"}),
     "Rust": frozenset({".rs"}),
+    "C": frozenset({".c", ".h"}),
 }
 
 
@@ -217,8 +241,6 @@ def suggest_project_config(project_root: Path) -> dict:
                         "you've located the actual frontend root",
         })
 
-    default_layer = "backend/other" if layers else "other"
-
     # A Cargo crate is a "sibling package" the same way a top-level package is in a Python
     # monorepo - that's the module dimension (classify_module), not layer: layer is a
     # cross-cutting architectural role (frontend/backend/config), which crate names aren't.
@@ -233,6 +255,19 @@ def suggest_project_config(project_root: Path) -> dict:
 
         for bin_name, file_basename in _find_rust_bin_targets(project_root):
             layers.append({"name": bin_name, "dirs": [], "files": [file_basename]})
+
+    if "C" in detected_languages:
+        for layer_name, candidates in _C_LAYER_STRUCTURE_CANDIDATES.items():
+            matched_dirs = [dir_names[c] for c in candidates["dirs"] if c in dir_names]
+            matched_files = [file_names[c] for c in candidates["files"] if c in file_names]
+            if matched_dirs or matched_files:
+                layers.append({"name": layer_name, "dirs": matched_dirs, "files": matched_files})
+
+    # Computed only after every layer source (general dict, frontend fallback, Rust/C
+    # conventions, bin targets) has had a chance to populate `layers` - checking this any
+    # earlier could wrongly report "other" for a project whose only matches come from a
+    # language-specific block below the check.
+    default_layer = "backend/other" if layers else "other"
 
     translations_files: list[str] = []
     for cand in _TRANSLATIONS_DIR_CANDIDATES:

@@ -121,12 +121,64 @@ def test_suggest_config_rust_bin_target_default_path(tmp_path, write_file):
     assert by_name["helper"]["files"] == ["helper.rs"]
 
 
+def test_suggest_config_default_layer_reflects_language_specific_matches(tmp_path, write_file):
+    # default_layer must be computed AFTER Rust/C-specific layers are added, not before - a
+    # project whose only match comes from a language-specific convention (no general-dict
+    # hit at all) still ends up with a non-empty `layers`, so default_layer should say
+    # "backend/other", not "other"
+    write_file(tmp_path, "Cargo.toml", '[package]\nname = "myapp"\n')
+    write_file(tmp_path, "tests/integration.rs", "fn test_foo() {}\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    assert draft["layers"] != []
+    assert draft["default_layer"] == "backend/other"
+
+
 def test_suggest_config_rust_heuristics_skipped_without_rust(tmp_path, write_file):
     # a Python project with a coincidental "tests" dir shouldn't get Rust-flavored layers
     write_file(tmp_path, "tests/test_foo.py", "def test_foo(): pass\n")
     draft = init_wizard.suggest_project_config(tmp_path)
     layer_names = {l["name"] for l in draft["layers"]}
     assert "tests" not in layer_names
+
+
+def test_suggest_config_c_conventional_dirs(tmp_path, write_file):
+    write_file(tmp_path, "include/mylib.h", "#ifndef MYLIB_H\n#define MYLIB_H\n#endif\n")
+    write_file(tmp_path, "src/mylib.c", "int foo(void) { return 1; }\n")
+    write_file(tmp_path, "tests/test_mylib.c", "int main(void) { return 0; }\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    layer_names = {l["name"] for l in draft["layers"]}
+    assert {"include", "tests"} <= layer_names
+
+
+def test_suggest_config_c_platform_dirs(tmp_path, write_file):
+    # native cross-platform C apps split GUI/OS-integration code into dedicated directories
+    # (PuTTY-style windows/unix) the same way a web project splits out "frontend"
+    write_file(tmp_path, "windows/window.c", "int WinMain(void) { return 0; }\n")
+    write_file(tmp_path, "unix/gtkwin.c", "int main(void) { return 0; }\n")
+    write_file(tmp_path, "core.c", "int core_fn(void) { return 1; }\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    by_name = {l["name"]: l for l in draft["layers"]}
+    assert "windows" in by_name["platform"]["dirs"]
+    assert "unix" in by_name["platform"]["dirs"]
+
+
+def test_suggest_config_c_vendor_dir(tmp_path, write_file):
+    write_file(tmp_path, "third_party/zlib/zlib.c", "int z(void) { return 1; }\n")
+    write_file(tmp_path, "src/main.c", "int main(void) { return 0; }\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    by_name = {l["name"]: l for l in draft["layers"]}
+    assert "third_party" in by_name["vendor"]["dirs"]
+
+
+def test_suggest_config_c_heuristics_skipped_without_c(tmp_path, write_file):
+    # a Python project with coincidental "include"/"windows"-named dirs shouldn't get
+    # C-flavored layers
+    write_file(tmp_path, "include/foo.py", "def foo(): pass\n")
+    write_file(tmp_path, "windows/bar.py", "def bar(): pass\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    layer_names = {l["name"] for l in draft["layers"]}
+    assert "include" not in layer_names
+    assert "platform" not in layer_names
 
 
 def test_write_draft_config_writes_when_absent(tmp_path):
