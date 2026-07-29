@@ -100,8 +100,8 @@ def _wipe_for_json_index_version(conn: sqlite3.Connection) -> None:
 def open_db(db_path: Path, model_name: str, project_root: Path) -> sqlite3.Connection:
     # check_same_thread=False: mcp_server.py holds one connection open for the lifetime of
     # the process (see its module-level _CONN) rather than reopening per call - defensive
-    # against FastMCP dispatching a tool call on a different thread than the one that opened
-    # it.
+    # against MCPServer dispatching a tool call on a different thread than the one that
+    # opened it.
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
