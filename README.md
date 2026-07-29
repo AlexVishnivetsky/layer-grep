@@ -237,8 +237,8 @@ keep in sync.
 - Zhang et al., "cAST: Enhancing Code Retrieval-Augmented Generation with
   Structural Chunking via Abstract Syntax Tree", *Findings of ACL: EMNLP
   2025* — [arxiv.org/abs/2506.15655](https://arxiv.org/abs/2506.15655)
-- Tao, Qin, Liu, "Retrieval-Augmented Code Generation: A Survey with Focus
-  on Repository-Level Approaches", Oct 2025 —
+- Tao, Li, Qin, Liu, "Retrieval-Augmented Code Generation: A Survey with
+  Focus on Repository-Level Approaches", Oct 2025 —
   [arxiv.org/abs/2510.04905](https://arxiv.org/abs/2510.04905)
 - Prieto-Díaz, "Implementing Faceted Classification for Software Reuse",
   *CACM*, 1991 — DOI:
