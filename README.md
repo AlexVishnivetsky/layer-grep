@@ -48,17 +48,16 @@ differentiator.
 
 ## Language support
 
-Not every feature is at full parity across languages yet, but chunking and
-import-graph expansion now cover all three.
+Not every feature is at full parity across languages yet.
 
-| Feature | Python | JavaScript/TypeScript | Rust |
-|---|---|---|---|
-| AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ |
-| Layer/module classification (path & name based) | ✅ | ✅ | ✅ |
-| Cross-layer literal linking | ✅ | ✅ | ✅ |
-| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ (relative `import`/`export ... from`/`require`; bare specifiers like `react` are left unresolved, same as an external Python package) | ✅ (real per-crate module tree from `mod` declarations, `crate::`/`self::`/`super::`, and cross-crate resolution by package name; doesn't cover `#[path = ...]`-relocated modules) |
-| `init-config` layer heuristics | ✅ (frontend/backend/models/...) | ✅ (frontend/backend/models/...) | ✅ (Cargo conventions: tests/examples/benches, Tauri commands, `[[bin]]` targets) |
-| `init-config` manifest-based module detection | – (directory-depth heuristic only) | – (directory-depth heuristic only) | ✅ (via Cargo.toml) |
+| Feature | Python | JavaScript/TypeScript | Rust | C |
+|---|---|---|---|---|
+| AST chunking (functions/classes/methods) | ✅ | ✅ | ✅ | ✅ |
+| Layer/module classification (path & name based) | ✅ | ✅ | ✅ | ✅ |
+| Cross-layer literal linking | ✅ | ✅ | ✅ | ✅ |
+| Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ❌ |
+| `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ |
+| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ❌ |
 
 ## Install
 
