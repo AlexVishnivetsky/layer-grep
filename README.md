@@ -234,35 +234,15 @@ keep in sync.
 
 ## Related reading
 
-layergrep wasn't built from these papers — the design (AST chunking, hybrid
-literal+semantic+import retrieval, layer/module as two separate facets) came
-first, from working on this and adjacent projects. Listed here for context,
-not as the source.
-
-- **cAST** (Zhang et al., *Findings of ACL: EMNLP 2025*) — closest conceptual
-  overlap: AST-based chunking for code retrieval. Their split-then-merge
-  approach (large nodes get recursively split under a size limit, small
-  adjacent nodes get merged instead of staying as separate noise chunks) is
-  a planned improvement here — layergrep currently treats every top-level
-  AST node as its own chunk, including single-line imports.
-  [arxiv.org/abs/2506.15655](https://arxiv.org/abs/2506.15655)
-
-- **"Retrieval-Augmented Code Generation: A Survey with Focus on
-  Repository-Level Approaches"** (Oct 2025) — a 100+ paper survey of the
-  field. Doesn't validate this specific implementation, but independently
-  supports two of its design choices: multi-path retrieval (sparse + dense +
-  structural signals combined) consistently outperforms any single method
-  across the surveyed systems, and RAG shows a growing advantage over
-  long-context-only approaches as repositories get larger and more
-  structurally complex.
+- Zhang et al., "cAST: Enhancing Code Retrieval-Augmented Generation with
+  Structural Chunking via Abstract Syntax Tree", *Findings of ACL: EMNLP
+  2025* — [arxiv.org/abs/2506.15655](https://arxiv.org/abs/2506.15655)
+- Tao, Qin, Liu, "Retrieval-Augmented Code Generation: A Survey with Focus
+  on Repository-Level Approaches", Oct 2025 —
   [arxiv.org/abs/2510.04905](https://arxiv.org/abs/2510.04905)
-
-- **Prieto-Díaz, "Implementing Faceted Classification for Software Reuse"**
-  (*CACM*, 1991) — the historical origin of faceted classification for
-  software artifacts, applied here to component reuse libraries rather than
-  code search. Useful as a frame for why `layer` and `module` are kept as
-  two independent facets rather than one hierarchy.
-  DOI: [10.1145/103167.103176](https://doi.org/10.1145/103167.103176)
+- Prieto-Díaz, "Implementing Faceted Classification for Software Reuse",
+  *CACM*, 1991 — DOI:
+  [10.1145/103167.103176](https://doi.org/10.1145/103167.103176)
 
 ## License
 
