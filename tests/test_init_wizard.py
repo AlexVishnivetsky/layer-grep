@@ -274,12 +274,17 @@ def test_find_cmake_targets_ignores_custom_macro_with_add_executable_suffix(tmp_
     assert init_wizard._find_cmake_targets(tmp_path) == []
 
 
-def test_suggest_config_cmake_targets_become_layers(tmp_path, write_file):
+def test_suggest_config_cmake_targets_become_modules_not_layers(tmp_path, write_file):
+    # a named CMake target ("myapp") is a sibling deliverable/package, not a recurring
+    # architectural role - that's the module dimension (module_rules), the same reasoning
+    # already applied to Rust crate names, not layer (which Rust [[bin]] targets earn
+    # instead, since a bin has no directory of its own to be grouped into as a module)
     write_file(tmp_path, "CMakeLists.txt", "add_executable(myapp src/main.c)\n")
     write_file(tmp_path, "src/main.c", "int main(void) { return 0; }\n")
     draft = init_wizard.suggest_project_config(tmp_path)
-    by_name = {l["name"]: l for l in draft["layers"]}
+    by_name = {m["name"]: m for m in draft["modules"]}
     assert by_name["myapp"]["files"] == ["main.c"]
+    assert "myapp" not in {l["name"] for l in draft["layers"]}
 
 
 def test_suggest_config_cmake_heuristics_skipped_without_c(tmp_path, write_file):
@@ -290,8 +295,7 @@ def test_suggest_config_cmake_heuristics_skipped_without_c(tmp_path, write_file)
     draft = init_wizard.suggest_project_config(tmp_path)
     assert "C++" in draft["_detected_languages"]
     assert "C" not in draft["_detected_languages"]
-    layer_names = {l["name"] for l in draft["layers"]}
-    assert "myapp" not in layer_names
+    assert draft["modules"] == []
 
 
 def test_write_draft_config_writes_when_absent(tmp_path):

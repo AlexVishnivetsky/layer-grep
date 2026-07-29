@@ -191,9 +191,11 @@ directory-naming guesses, which don't apply to Rust code at all. C has no
 single dominant manifest format the way Cargo.toml is for Rust (CMake,
 Makefiles, Meson, Bazel, and Autotools all coexist), so this is scoped to
 `CMakeLists.txt` only: every `add_library`/`add_executable` call with a
-literal target name becomes its own `layers` entry (matched by the source
+literal target name becomes its own `modules` rule (matched by the source
 files' basenames), resolved straight from the manifest rather than guessed
-from directory naming. A target built from a variable name (e.g.
+from directory naming — a named CMake target is a sibling deliverable
+(the `modules` axis, same reasoning as Rust crate names above), not a
+recurring architectural role. A target built from a variable name (e.g.
 `add_library(${LIB_NAME} ...)`, common in larger CMake projects) can't be
 resolved this way and is skipped — a directory-naming-based layer guess
 may still catch it. `layergrep calibrate-thresholds` reports the real

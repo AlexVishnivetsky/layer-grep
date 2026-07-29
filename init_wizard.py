@@ -296,8 +296,9 @@ def _tokenize_cmake_args(body: str) -> list[str]:
 def _find_cmake_targets(project_root: Path) -> list[tuple[str, list[str]]]:
     """(target_name, [source_basenames]) for every add_library/add_executable call found
     across all CMakeLists.txt under project_root - CMake's closest equivalent to Cargo's
-    [[bin]]/[lib] targets. Each detected target becomes its own layer entry, the same way
-    _find_rust_bin_targets' results do.
+    [[bin]]/[lib] targets. Each detected target becomes its own module_rules entry (a
+    sibling deliverable/package, not a recurring architectural role - see the module vs.
+    layer rationale where this is called from in suggest_project_config()).
 
     Deliberately not a full CMake evaluator - only resolves calls whose target name is
     literal text, skipping anything built from a variable/generator-expression entirely
@@ -408,9 +409,22 @@ def suggest_project_config(project_root: Path) -> dict:
     # this ticket's scope to what #25 asks for. #26 broadens this to "C" or "C++" once
     # validated separately against a real C++/CMake project, mirroring how
     # _C_LAYER_STRUCTURE_CANDIDATES above was itself extended from C to C++ (#24).
+    #
+    # A named CMake target (add_library/add_executable) is a sibling deliverable/package -
+    # "pageant", "network", "charset" aren't architectural roles that recur across a
+    # codebase (unlike "config"/"models"), they're specific named components. That's the
+    # module dimension (classify_module), the same reasoning already applied to Rust crate
+    # names just above - not layer, which #25 originally (incorrectly) mirrored from Rust's
+    # [[bin]] targets instead of from Rust's crates. A [[bin]] genuinely earns layer
+    # treatment because it's a distinct deliverable *without its own directory* to be
+    # grouped into as a module; a CMake target has exactly the same problem (its sources are
+    # often scattered across shared directories, not its own subtree) - module_rules (this
+    # dict-based rule mechanism instead of module_depth) is exactly the escape hatch built
+    # for a business entity that doesn't align with any single directory.
+    modules: list[dict] = []
     if "C" in detected_languages:
         for target_name, basenames in _find_cmake_targets(project_root):
-            layers.append({"name": target_name, "dirs": [], "files": basenames})
+            modules.append({"name": target_name, "dirs": [], "files": basenames})
 
     # Computed only after every layer source (general dict, frontend fallback, Rust/C
     # conventions, bin targets) has had a chance to populate `layers` - checking this any
@@ -439,6 +453,7 @@ def suggest_project_config(project_root: Path) -> dict:
         "_detected_languages": detected_languages,
         "layers": layers,
         "default_layer": default_layer,
+        "modules": modules,
         "translations": {"files": translations_files},
         "extra_excluded_dirs": [],
     }
