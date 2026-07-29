@@ -87,9 +87,16 @@ def test_no_imports_yields_no_edges(tmp_path, write_file):
     assert edges == []
 
 
-def test_imports_version_is_int():
+def test_imports_versions_are_ints():
     import imports
-    assert isinstance(imports.IMPORTS_VERSION, int)
+    assert set(imports.IMPORTS_VERSIONS) == set(imports.IMPORT_VERSION_GROUPS)
+    assert all(isinstance(v, int) for v in imports.IMPORTS_VERSIONS.values())
+
+
+def test_import_graph_extensions_matches_group_union():
+    import imports
+    expected = frozenset().union(*imports.IMPORT_VERSION_GROUPS.values())
+    assert imports.IMPORT_GRAPH_EXTENSIONS == expected
 
 
 def test_js_default_import_resolves_with_inferred_extension(tmp_path, write_file):

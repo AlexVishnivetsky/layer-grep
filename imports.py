@@ -7,21 +7,38 @@ from tree_sitter import Node, Parser
 
 from chunker import EXTENSION_LANGS, PY_LANG, RUST_LANG
 
-# Bump on any change to extract_python_imports()/extract_js_imports()/extract_rust_imports()/
-# extract_c_imports() that would resolve the same source differently, or when a new extension
-# gains import-graph support (existing already-hashed-unchanged files of that extension would
-# otherwise never get (re)processed - see db_schema._wipe_for_imports_version(), which reads
-# this same list) - mirrors chunker.CHUNKER_VERSION's role for code chunking.
-IMPORTS_VERSION = 7
+# Which extensions extract_imports() dispatches to the same extractor (and therefore share
+# one version/wipe-scope in db_schema.py - see IMPORTS_VERSIONS below) - issue #35: a single
+# global version forced a full reindex of every import-graph-covered file in a mixed-language
+# project whenever ANY one language's resolver changed, even languages whose resolution logic
+# was completely untouched (e.g. a Rust-only fix wiping a pure-Python project's own,
+# already-correct import edges too). C and C++ share one group since #22 unified them into a
+# single extractor (extract_c_imports) - there's no meaningful way to version them apart.
+IMPORT_VERSION_GROUPS: dict[str, frozenset[str]] = {
+    "python": frozenset({".py"}),
+    "js_ts": frozenset({".js", ".jsx", ".ts", ".tsx"}),
+    "rust": frozenset({".rs"}),
+    "c_cpp": frozenset({".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}),
+}
 
-# Every extension extract_imports() knows how to handle - the single source of truth for
-# both indexer.py's per-file dispatch and db_schema.py's version-migration wipe (which needs
-# to know which already-indexed files must be force-reprocessed, not just re-derive its own
-# copy of this list and risk it drifting out of sync).
-IMPORT_GRAPH_EXTENSIONS = frozenset({
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".c", ".h",
-    ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
-})
+# Bump the relevant group's version on any change to that group's extractor that would
+# resolve the same source differently, or when a new extension joins the group (existing
+# already-hashed-unchanged files of that extension would otherwise never get (re)processed -
+# see db_schema.py's per-group wipe, which reads IMPORT_VERSION_GROUPS to know which files
+# belong to which group). Mirrors chunker.CHUNKER_VERSION's role for code chunking, just
+# split finer-grained here since import resolution is genuinely independent per language
+# (unlike chunking, where every language shares the exact same chunk_file() call site).
+IMPORTS_VERSIONS: dict[str, int] = {
+    "python": 1,
+    "js_ts": 1,
+    "rust": 1,
+    "c_cpp": 1,
+}
+
+# Every extension extract_imports() knows how to handle - derived from IMPORT_VERSION_GROUPS
+# (not hand-maintained separately) so it can't drift out of sync with which extensions are
+# actually covered. The single source of truth for indexer.py's per-file dispatch.
+IMPORT_GRAPH_EXTENSIONS = frozenset().union(*IMPORT_VERSION_GROUPS.values())
 
 
 @dataclass(frozen=True)
