@@ -5,20 +5,20 @@ from pathlib import Path
 
 from tree_sitter import Node, Parser
 
-from chunker import EXTENSION_LANGS, PY_LANG, RUST_LANG
+from chunker import C_LANG, EXTENSION_LANGS, PY_LANG, RUST_LANG
 
-# Bump on any change to extract_python_imports()/extract_js_imports()/extract_rust_imports()
-# that would resolve the same source differently, or when a new extension gains import-graph
-# support (existing already-hashed-unchanged files of that extension would otherwise never
-# get (re)processed - see db_schema._wipe_for_imports_version(), which reads this same list)
-# - mirrors chunker.CHUNKER_VERSION's role for code chunking.
-IMPORTS_VERSION = 4
+# Bump on any change to extract_python_imports()/extract_js_imports()/extract_rust_imports()/
+# extract_c_imports() that would resolve the same source differently, or when a new extension
+# gains import-graph support (existing already-hashed-unchanged files of that extension would
+# otherwise never get (re)processed - see db_schema._wipe_for_imports_version(), which reads
+# this same list) - mirrors chunker.CHUNKER_VERSION's role for code chunking.
+IMPORTS_VERSION = 5
 
 # Every extension extract_imports() knows how to handle - the single source of truth for
 # both indexer.py's per-file dispatch and db_schema.py's version-migration wipe (which needs
 # to know which already-indexed files must be force-reprocessed, not just re-derive its own
 # copy of this list and risk it drifting out of sync).
-IMPORT_GRAPH_EXTENSIONS = frozenset({".py", ".js", ".jsx", ".ts", ".tsx", ".rs"})
+IMPORT_GRAPH_EXTENSIONS = frozenset({".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".c", ".h"})
 
 
 @dataclass(frozen=True)
@@ -501,6 +501,50 @@ def extract_rust_imports(path: Path, project_root: Path) -> list[ImportEdge]:
     return edges
 
 
+def _resolve_c_include(specifier: str, from_file: Path) -> Path | None:
+    """Quoted `#include "foo.h"` - resolved relative to the including file's own directory,
+    the first place a real C compiler looks for a quoted include before falling back to any
+    project-specific `-I` search paths. Those extra search paths aren't discoverable from the
+    source tree alone (build-system-specific compiler flags, not something layergrep has
+    visibility into) - left unresolved for now, same "give up, no edge" treatment as an
+    external Python package or an unresolved JS bare specifier."""
+    candidate = (from_file.parent / specifier).resolve()
+    return candidate if candidate.is_file() else None
+
+
+def extract_c_imports(path: Path, project_root: Path) -> list[ImportEdge]:
+    """Quoted `#include "foo.h"` only - resolved via `preproc_include`'s `path` field. No
+    extension-guessing needed unlike JS/TS (`#include` already names the real file's exact
+    extension). Angle-bracket `#include <foo.h>` (system/library headers via the compiler's
+    own search path) is left unresolved, same treatment as an external Python package - no
+    project-agnostic way to know a compiler's system include paths.
+
+    `project_root` is unused here (a quoted include only ever resolves relative to the
+    including file, same reasoning as extract_js_imports) - kept in the signature so
+    extract_imports() can dispatch to any extractor uniformly."""
+    source = path.read_bytes()
+    parser = Parser(C_LANG.language)
+    tree = parser.parse(source)
+
+    edges: list[ImportEdge] = []
+
+    def walk(node: Node) -> None:
+        if node.type == "preproc_include":
+            path_node = node.child_by_field_name("path")
+            if path_node is not None and path_node.type == "string_literal":
+                content = next((c for c in path_node.children if c.type == "string_content"), None)
+                if content is not None:
+                    specifier = _text(content, source)
+                    target = _resolve_c_include(specifier, path)
+                    if target is not None:
+                        edges.append(ImportEdge(path, target, specifier))
+        for c in node.children:
+            walk(c)
+
+    walk(tree.root_node)
+    return edges
+
+
 def extract_imports(path: Path, project_root: Path) -> list[ImportEdge]:
     """Single entry point indexer.py calls - dispatches to the right language-specific
     extractor by extension, so indexer.py doesn't need its own per-language branching (and
@@ -512,6 +556,8 @@ def extract_imports(path: Path, project_root: Path) -> list[ImportEdge]:
         return extract_js_imports(path, project_root)
     if suffix == ".rs":
         return extract_rust_imports(path, project_root)
+    if suffix in (".c", ".h"):
+        return extract_c_imports(path, project_root)
     return []
 
 

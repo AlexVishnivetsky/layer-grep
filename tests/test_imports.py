@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from imports import (
+    extract_c_imports,
     extract_imports,
     extract_js_imports,
     extract_python_imports,
@@ -186,6 +187,11 @@ def test_extract_imports_dispatches_by_extension(tmp_path, write_file):
     assert len(js_edges) == 1 and js_edges[0].target == tmp_path / "helpers.js"
     assert extract_imports(rs_src, tmp_path) == []  # dispatched to the Rust extractor, no `use` statements to find
 
+    write_file(tmp_path, "helpers.h", "int foo(void);\n")
+    c_src = write_file(tmp_path, "main.c", '#include "helpers.h"\n')
+    c_edges = extract_imports(c_src, tmp_path)
+    assert len(c_edges) == 1 and c_edges[0].target == tmp_path / "helpers.h"
+
 
 def test_rust_crate_path_resolves_through_mod_tree(tmp_path, write_file):
     write_file(tmp_path, "Cargo.toml", '[package]\nname = "myapp"\n')
@@ -313,3 +319,58 @@ def test_rust_bin_target_gets_own_tree(tmp_path, write_file):
     edges = extract_rust_imports(src, tmp_path)
     assert len(edges) == 1
     assert edges[0].target == tmp_path / "src" / "helpers.rs"
+
+
+def test_c_quoted_include_resolves_relative_to_including_file(tmp_path, write_file):
+    write_file(tmp_path, "helpers.h", "#ifndef HELPERS_H\n#define HELPERS_H\nint foo(void);\n#endif\n")
+    src = write_file(tmp_path, "main.c", '#include "helpers.h"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.h"
+    assert edges[0].module == "helpers.h"
+
+
+def test_c_quoted_include_subdirectory_path(tmp_path, write_file):
+    write_file(tmp_path, "include/helpers.h", "int foo(void);\n")
+    src = write_file(tmp_path, "src/main.c", '#include "../include/helpers.h"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "include" / "helpers.h"
+
+
+def test_c_angle_bracket_include_yields_no_edge(tmp_path, write_file):
+    # a system/library header via the compiler's own search path - same treatment as an
+    # external Python package or a bare JS specifier
+    src = write_file(tmp_path, "main.c", "#include <stdio.h>\n")
+    edges = extract_c_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_c_unresolvable_quoted_include_yields_no_edge(tmp_path, write_file):
+    # a project-specific -I search path this function has no visibility into (see the open
+    # question in issue #21) - left unresolved rather than guessed at
+    src = write_file(tmp_path, "main.c", '#include "does_not_exist.h"\n')
+    edges = extract_c_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_c_no_includes_yields_no_edges(tmp_path, write_file):
+    src = write_file(tmp_path, "main.c", "int main(void) { return 0; }\n")
+    edges = extract_c_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_c_include_inside_header_guard_still_found(tmp_path, write_file):
+    # #include nested inside a #ifndef/#endif header guard - the extractor walks the whole
+    # tree recursively (unlike chunker.py, it doesn't need the transparent-container
+    # flattening mechanism to find nodes buried inside a preproc_ifdef)
+    write_file(tmp_path, "helpers.h", "int foo(void);\n")
+    src = write_file(tmp_path, "main.h", (
+        "#ifndef MAIN_H\n"
+        "#define MAIN_H\n"
+        '#include "helpers.h"\n'
+        "#endif\n"
+    ))
+    edges = extract_c_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "helpers.h"
