@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import db_schema
 import indexer
@@ -75,16 +75,16 @@ _ENV_ALLOWLIST = [
 _env_snapshot = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
 logger.info(f"server process env (allowlisted): {_env_snapshot}")
 
-# Warm the model cache here, before FastMCP spawns its own worker threads (mcp.run() below):
+# Warm the model cache here, before MCPServer spawns its own worker threads (mcp.run() below):
 # on Windows, a Python import that triggers OpenBLAS's DLL load can deadlock via loader-lock
 # contention if *other* threads already exist in the process and might touch the loader
 # concurrently (OpenBLAS spawns its own worker threads from inside DllMain, a well-known
 # OpenBLAS-on-Windows anti-pattern - DllMain must never create threads, because the loader
-# lock is held during it) - exactly the situation once FastMCP's AnyIO worker-thread pool is
-# running. Doing the heavy import here, before any of FastMCP's threads exist, sidesteps the
+# lock is held during it) - exactly the situation once MCPServer's AnyIO worker-thread pool is
+# running. Doing the heavy import here, before any of those threads exist, sidesteps the
 # race entirely - by the time a real layergrep call runs model_config.load_model(), it's
 # just an in-process cache hit (_MODEL_CACHE), not a fresh import.
-logger.info("warming model cache before starting FastMCP...")
+logger.info("warming model cache before starting MCPServer...")
 _t_warm = time.monotonic()
 try:
     model_config.load_model(MODEL_NAME)
@@ -96,7 +96,7 @@ except model_config.ModelNotCachedError:
     logger.warning(f"model {MODEL_NAME!r} isn't downloaded yet - starting anyway; "
                     f"layergrep/index_codebase will report this until install_model is called")
 
-mcp = FastMCP("layergrep")
+mcp = MCPServer("layergrep")
 
 # Opened once for the process lifetime, not per call: open_db() reruns every migration/
 # version check (CREATE TABLE IF NOT EXISTS x N, PRAGMA table_info, meta-table version
@@ -125,9 +125,8 @@ def _describe_configured_layers(cfg: pconfig.ProjectConfig) -> str:
 
 
 # Built once at import time (from PROJECT_CONFIG, loaded above) and passed via
-# mcp.tool(description=...) rather than a plain docstring literal: FastMCP reads fn.__doc__
-# at decoration time (mcp/server/fastmcp/tools/base.py: `func_doc = description or
-# fn.__doc__ or ""`), which only ever sees a string that's a compile-time constant if written
+# mcp.tool(description=...) rather than a plain docstring literal: MCPServer reads fn.__doc__
+# at decoration time, which only ever sees a string that's a compile-time constant if written
 # as a normal """docstring""" - it can't be an f-string. Computing it here lets the layer list
 # reflect whatever project PROJECT_ROOT actually points at, instead of hardcoding one
 # project's layer names into a file meant to be reused unmodified across projects.
