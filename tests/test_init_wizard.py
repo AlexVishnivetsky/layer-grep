@@ -207,6 +207,93 @@ def test_suggest_config_c_and_cpp_together_do_not_duplicate_layers(tmp_path, wri
     assert len(by_name["include"]) == 1
 
 
+def test_find_cmake_targets_literal_target_and_sources(tmp_path, write_file):
+    write_file(tmp_path, "CMakeLists.txt",
+               "add_library(mylib STATIC src/foo.c src/bar.c)\n")
+    write_file(tmp_path, "src/foo.c", "int foo(void) { return 1; }\n")
+    write_file(tmp_path, "src/bar.c", "int bar(void) { return 2; }\n")
+    targets = init_wizard._find_cmake_targets(tmp_path)
+    assert targets == [("mylib", ["bar.c", "foo.c"])]
+
+
+def test_find_cmake_targets_skips_variable_target_name(tmp_path, write_file):
+    # curl's real libcurl/CLI targets are all declared this way - nothing downstream is
+    # resolvable once the target's own name isn't literal text
+    write_file(tmp_path, "CMakeLists.txt", "add_library(${LIB_NAME} STATIC src/foo.c)\n")
+    write_file(tmp_path, "src/foo.c", "int foo(void) { return 1; }\n")
+    assert init_wizard._find_cmake_targets(tmp_path) == []
+
+
+def test_find_cmake_targets_drops_only_dynamic_source_tokens(tmp_path, write_file):
+    # real PuTTY calls mix literal sources with one generator-expression entry in the same
+    # call - the literal sources must still be found, not discarded along with the dynamic one
+    write_file(tmp_path, "CMakeLists.txt",
+               "add_library(network STATIC\n"
+               "  errsock.c\n"
+               "  $<TARGET_OBJECTS:logging>\n"
+               "  proxy.c)\n")
+    write_file(tmp_path, "errsock.c", "int e(void) { return 1; }\n")
+    write_file(tmp_path, "proxy.c", "int p(void) { return 1; }\n")
+    targets = init_wizard._find_cmake_targets(tmp_path)
+    assert targets == [("network", ["errsock.c", "proxy.c"])]
+
+
+def test_find_cmake_targets_skips_interface_target_with_no_real_sources(tmp_path, write_file):
+    write_file(tmp_path, "CMakeLists.txt", "add_library(header_only INTERFACE)\n")
+    assert init_wizard._find_cmake_targets(tmp_path) == []
+
+
+def test_find_cmake_targets_merges_same_name_across_manifests(tmp_path, write_file):
+    # cross-platform C's common idiom - PuTTY declares "pageant" once per platform dir with
+    # overlapping-but-not-identical sources; both genuinely belong to the same deliverable
+    write_file(tmp_path, "unix/CMakeLists.txt", "add_executable(pageant unix_pageant.c)\n")
+    write_file(tmp_path, "windows/CMakeLists.txt", "add_executable(pageant win_pageant.c)\n")
+    write_file(tmp_path, "unix/unix_pageant.c", "int main(void) { return 0; }\n")
+    write_file(tmp_path, "windows/win_pageant.c", "int main(void) { return 0; }\n")
+    targets = init_wizard._find_cmake_targets(tmp_path)
+    assert targets == [("pageant", ["unix_pageant.c", "win_pageant.c"])]
+
+
+def test_find_cmake_targets_handles_trailing_comment_inside_call(tmp_path, write_file):
+    # a stray ')' inside a real in-call comment (seen in PuTTY's CMakeLists.txt) must not
+    # prematurely close the paren-depth scan
+    write_file(tmp_path, "CMakeLists.txt",
+               "add_library(mylib STATIC\n"
+               "  foo.c # see foo(bar) for details\n"
+               "  bar.c)\n")
+    write_file(tmp_path, "foo.c", "int foo(void) { return 1; }\n")
+    write_file(tmp_path, "bar.c", "int bar(void) { return 1; }\n")
+    targets = init_wizard._find_cmake_targets(tmp_path)
+    assert targets == [("mylib", ["bar.c", "foo.c"])]
+
+
+def test_find_cmake_targets_ignores_custom_macro_with_add_executable_suffix(tmp_path, write_file):
+    # fmt's real CUDA test tree calls a distinct `cuda_add_executable(...)` macro with no
+    # guaranteed argument shape - a bare substring match would misfire on it
+    write_file(tmp_path, "CMakeLists.txt", "cuda_add_executable(gpu_test a.cu b.cc)\n")
+    assert init_wizard._find_cmake_targets(tmp_path) == []
+
+
+def test_suggest_config_cmake_targets_become_layers(tmp_path, write_file):
+    write_file(tmp_path, "CMakeLists.txt", "add_executable(myapp src/main.c)\n")
+    write_file(tmp_path, "src/main.c", "int main(void) { return 0; }\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    by_name = {l["name"]: l for l in draft["layers"]}
+    assert by_name["myapp"]["files"] == ["main.c"]
+
+
+def test_suggest_config_cmake_heuristics_skipped_without_c(tmp_path, write_file):
+    # #25 gates CMake target detection on "C" alone (not yet "C++") - documents the
+    # intentional sequencing with #26, which broadens this to include C++ projects
+    write_file(tmp_path, "CMakeLists.txt", "add_executable(myapp src/main.cpp)\n")
+    write_file(tmp_path, "src/main.cpp", "int main() { return 0; }\n")
+    draft = init_wizard.suggest_project_config(tmp_path)
+    assert "C++" in draft["_detected_languages"]
+    assert "C" not in draft["_detected_languages"]
+    layer_names = {l["name"] for l in draft["layers"]}
+    assert "myapp" not in layer_names
+
+
 def test_write_draft_config_writes_when_absent(tmp_path):
     draft = {"layers": [], "default_layer": "backend/other", "translations": {"files": []},
               "extra_excluded_dirs": []}

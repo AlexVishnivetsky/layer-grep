@@ -58,7 +58,7 @@ Not every feature is at full parity across languages yet.
 | Cross-layer literal linking | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Import-graph expansion (`expand_via_imports`) | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `init-config` layer heuristics | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ❌ | ❌ |
+| `init-config` manifest-based module detection | ❌ | ❌ | ✅ | ✅ | ❌ |
 
 ## Install
 
@@ -187,8 +187,17 @@ sibling package (the `modules` axis), not an architectural role. For
 Cargo conventions (`tests`/`examples`/`benches` dirs, a Tauri app's
 `commands`/`handlers` surface) and one layer per `[[bin]]` target read
 straight from the manifest — rather than the Flask/Django-shaped
-directory-naming guesses, which don't apply to Rust code at all. `layergrep
-calibrate-thresholds` reports the real match-count distribution for the
+directory-naming guesses, which don't apply to Rust code at all. C has no
+single dominant manifest format the way Cargo.toml is for Rust (CMake,
+Makefiles, Meson, Bazel, and Autotools all coexist), so this is scoped to
+`CMakeLists.txt` only: every `add_library`/`add_executable` call with a
+literal target name becomes its own `layers` entry (matched by the source
+files' basenames), resolved straight from the manifest rather than guessed
+from directory naming. A target built from a variable name (e.g.
+`add_library(${LIB_NAME} ...)`, common in larger CMake projects) can't be
+resolved this way and is skipped — a directory-naming-based layer guess
+may still catch it. `layergrep calibrate-thresholds` reports the real
+match-count distribution for the
 `literal_noise_threshold`/`import_noise_threshold` fields on an already-
 indexed project, instead of leaving you to guess whether the defaults (tuned
 on one ~8000-chunk corpus) fit yours.
