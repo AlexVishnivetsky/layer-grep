@@ -4,7 +4,7 @@ tree-sitter-python==0.23.6
 # tree-sitter-languages is incompatible with tree-sitter>=0.22 (old grammar-loading API,
 # see https://github.com/grantjenks/py-tree-sitter-languages) - using separate grammar
 # packages built on the new PyCapsule-based API instead, same as tree-sitter-python above
-tree-sitter-javascript==0.23.1
+tree-sitter-javascript==0.25.0
 tree-sitter-typescript==0.23.2
 tree-sitter-rust==0.23.2
 tree-sitter-c==0.23.2
