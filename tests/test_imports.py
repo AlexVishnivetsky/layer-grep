@@ -75,6 +75,54 @@ def test_cross_package_import_resolves_across_project_root(tmp_path, write_file)
     assert edges[0].target == tmp_path / "engine" / "core.py"
 
 
+def test_self_named_package_absolute_import_resolves(tmp_path, write_file):
+    # project_root IS the package itself (`garm/`), and a file inside it imports the package
+    # by its own name - a common real-world layout, typically enabled by a
+    # `sys.path.insert(0, ...)`-style bootstrap
+    project_root = tmp_path / "garm"
+    write_file(tmp_path, "garm/__init__.py", "")
+    write_file(tmp_path, "garm/modules/__init__.py", "")
+    write_file(tmp_path, "garm/modules/cron.py", "class CronMaster:\n    pass\n")
+    src = write_file(tmp_path, "garm/main.py", "from garm.modules.cron import CronMaster\n")
+
+    edges = extract_python_imports(src, project_root)
+    assert len(edges) == 1
+    assert edges[0].target == project_root / "modules" / "cron.py"
+
+
+def test_self_named_package_bare_import_resolves_to_own_init(tmp_path, write_file):
+    project_root = tmp_path / "garm"
+    write_file(tmp_path, "garm/__init__.py", "VALUE = 1\n")
+    src = write_file(tmp_path, "garm/sub/main.py", "import garm\n")
+
+    edges = extract_python_imports(src, project_root)
+    assert len(edges) == 1
+    assert edges[0].target == project_root / "__init__.py"
+
+
+def test_self_named_package_fallback_not_applied_to_relative_imports(tmp_path, write_file):
+    # regression guard: the self-named fallback is only meaningful for absolute imports
+    # (base == project_root) - a relative import's base is never project_root itself, so a
+    # first segment that happens to equal project_root.name must not trigger it
+    project_root = tmp_path / "garm"
+    write_file(tmp_path, "garm/sibling/__init__.py", "")
+    src = write_file(tmp_path, "garm/main.py", "from .garm import missing\n")
+
+    edges = extract_python_imports(src, project_root)
+    assert edges == []
+
+
+def test_first_segment_matching_project_name_but_unresolvable_yields_no_edge(tmp_path, write_file):
+    # the fallback only fires when the direct resolve fails AND parts[0] == project_root.name -
+    # if parts[1:] still doesn't resolve to a real file, this must stay a normal "no edge",
+    # not a crash or a wrong guess
+    project_root = tmp_path / "garm"
+    src = write_file(tmp_path, "garm/main.py", "import garm.totally_missing\n")
+
+    edges = extract_python_imports(src, project_root)
+    assert edges == []
+
+
 def test_unresolvable_import_yields_no_edge(tmp_path, write_file):
     src = write_file(tmp_path, "main.py", "import totally_missing_package\n")
     edges = extract_python_imports(src, tmp_path)
