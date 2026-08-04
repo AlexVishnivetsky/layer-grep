@@ -65,20 +65,45 @@ def _is_type_checking_condition(if_node: Node, source: bytes) -> bool:
     return text == "TYPE_CHECKING" or text.endswith(".TYPE_CHECKING")
 
 
-def _resolve_dotted(parts: list[str], base: Path) -> Path | None:
+def _resolve_dotted(parts: list[str], base: Path, project_root: Path | None = None) -> Path | None:
     """`a.b.c` under `base`: walk directories part by part, a `.py` file ends the walk early
     (remaining parts, if any, are names inside that module) - if all parts are consumed and
-    it's a directory, fall back to its `__init__.py`."""
-    path = base
-    for part in parts:
-        path = path / part
-        file_candidate = path.with_suffix(".py")
-        if file_candidate.is_file():
-            return file_candidate
-        if not path.is_dir():
-            return None
-    init_file = path / "__init__.py"
-    return init_file if init_file.is_file() else None
+    it's a directory, fall back to its `__init__.py`.
+
+    `project_root` (only meaningful for *absolute* imports, where `base` already *is*
+    project_root - relative-import callers should leave this `None`) enables a fallback for
+    self-named packages: a project whose root directory IS the package it defines
+    (`import garm` / `from garm.x import y` from a file inside `garm/` itself - a common
+    real-world layout, typically enabled by a `sys.path.insert(0, ...)`-style bootstrap).
+    Without this, `garm.modules.cron.cron` from `project_root=garm/` looks for the
+    nonexistent `garm/garm/modules/cron/cron.py` and silently returns `None`, indistinguishable
+    from a genuinely external/unresolvable package - found via the layer-discovery research on
+    two real commercial projects, where it made 52-58% of files look falsely isolated.
+
+    If the direct walk from `base` fails AND the first dotted segment equals the project
+    root's own directory name, retries treating that first segment as "this is the project's
+    own name", not a real subdirectory - i.e. resolves `parts[1:]` from the same `base`
+    instead of `base/parts[0]/...`. Deliberately does NOT resolve from the parent directory
+    instead (which would reach outside the explicitly configured project_root) - this stays
+    self-contained within the project boundary the caller already chose."""
+    def walk(remaining: list[str], from_path: Path) -> Path | None:
+        path = from_path
+        for part in remaining:
+            path = path / part
+            file_candidate = path.with_suffix(".py")
+            if file_candidate.is_file():
+                return file_candidate
+            if not path.is_dir():
+                return None
+        init_file = path / "__init__.py"
+        return init_file if init_file.is_file() else None
+
+    result = walk(parts, base)
+    if result is not None:
+        return result
+    if project_root is not None and parts and parts[0] == project_root.name:
+        return walk(parts[1:], base)
+    return None
 
 
 def _resolve_from_names(base_dir: Path, names: list[str]) -> Path | None:
@@ -126,12 +151,12 @@ def extract_python_imports(path: Path, project_root: Path) -> list[ImportEdge]:
         for child in node.named_children:
             if child.type == "dotted_name":
                 parts = _text(child, source).split(".")
-                add_edge(_resolve_dotted(parts, project_root), ".".join(parts))
+                add_edge(_resolve_dotted(parts, project_root, project_root), ".".join(parts))
             elif child.type == "aliased_import":
                 name_node = child.child_by_field_name("name")
                 if name_node is not None:
                     parts = _text(name_node, source).split(".")
-                    add_edge(_resolve_dotted(parts, project_root), ".".join(parts))
+                    add_edge(_resolve_dotted(parts, project_root, project_root), ".".join(parts))
 
     def handle_import_from_statement(node: Node) -> None:
         module_node = node.child_by_field_name("module_name")
@@ -142,6 +167,7 @@ def extract_python_imports(path: Path, project_root: Path) -> list[ImportEdge]:
         if module_node.type == "dotted_name":
             parts = _text(module_node, source).split(".")
             base = project_root
+            self_named_root = project_root
             module_display = ".".join(parts)
         elif module_node.type == "relative_import":
             prefix = next((c for c in module_node.named_children if c.type == "import_prefix"), None)
@@ -149,12 +175,13 @@ def extract_python_imports(path: Path, project_root: Path) -> list[ImportEdge]:
             remainder = next((c for c in module_node.named_children if c.type == "dotted_name"), None)
             parts = _text(remainder, source).split(".") if remainder is not None else []
             base = _relative_base(path, level)
+            self_named_root = None  # relative imports already resolve from the right place
             module_display = "." * level + ".".join(parts)
         else:
             return
 
         if parts:
-            target = _resolve_dotted(parts, base)
+            target = _resolve_dotted(parts, base, self_named_root)
         else:
             init_file = base / "__init__.py"
             target = init_file if init_file.is_file() else None
