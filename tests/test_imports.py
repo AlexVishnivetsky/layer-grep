@@ -135,6 +135,48 @@ def test_no_imports_yields_no_edges(tmp_path, write_file):
     assert edges == []
 
 
+def test_type_checking_guarded_import_is_excluded(tmp_path, write_file):
+    write_file(tmp_path, "pkg/__init__.py", "")
+    write_file(tmp_path, "pkg/other.py", "class Other:\n    pass\n")
+    src = write_file(
+        tmp_path, "pkg/main.py",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.other import Other\n",
+    )
+    edges = extract_python_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_type_checking_attribute_form_guarded_import_is_excluded(tmp_path, write_file):
+    write_file(tmp_path, "pkg/__init__.py", "")
+    write_file(tmp_path, "pkg/other.py", "class Other:\n    pass\n")
+    src = write_file(
+        tmp_path, "pkg/main.py",
+        "import typing\n"
+        "if typing.TYPE_CHECKING:\n"
+        "    from pkg.other import Other\n",
+    )
+    edges = extract_python_imports(src, tmp_path)
+    assert edges == []
+
+
+def test_type_checking_else_branch_is_still_walked(tmp_path, write_file):
+    write_file(tmp_path, "pkg/__init__.py", "")
+    write_file(tmp_path, "pkg/guarded.py", "class Guarded:\n    pass\n")
+    write_file(tmp_path, "pkg/real.py", "class Real:\n    pass\n")
+    src = write_file(
+        tmp_path, "pkg/main.py",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.guarded import Guarded\n"
+        "else:\n"
+        "    from pkg.real import Real\n",
+    )
+    edges = extract_python_imports(src, tmp_path)
+    assert [e.target for e in edges] == [tmp_path / "pkg" / "real.py"]
+
+
 def test_imports_versions_are_ints():
     import imports
     assert set(imports.IMPORTS_VERSIONS) == set(imports.IMPORT_VERSION_GROUPS)

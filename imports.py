@@ -52,6 +52,19 @@ def _text(node: Node, source: bytes) -> str:
     return source[node.start_byte:node.end_byte].decode("utf-8")
 
 
+def _is_type_checking_condition(if_node: Node, source: bytes) -> bool:
+    """Matches `if TYPE_CHECKING:` (bare identifier) and `if typing.TYPE_CHECKING:` /
+    `if t.TYPE_CHECKING:` (attribute access under any module alias) - checked as raw source
+    text rather than resolving the actual binding, same pragmatic choice as everywhere else in
+    this file that a "close enough, no false negatives on the common real-world spelling"
+    heuristic beats a full symbol-table resolution neither tree-sitter nor this codebase has."""
+    condition = if_node.child_by_field_name("condition")
+    if condition is None:
+        return False
+    text = _text(condition, source)
+    return text == "TYPE_CHECKING" or text.endswith(".TYPE_CHECKING")
+
+
 def _resolve_dotted(parts: list[str], base: Path, project_root: Path | None = None) -> Path | None:
     """`a.b.c` under `base`: walk directories part by part, a `.py` file ends the walk early
     (remaining parts, if any, are names inside that module) - if all parts are consumed and
@@ -185,6 +198,19 @@ def extract_python_imports(path: Path, project_root: Path) -> list[ImportEdge]:
             handle_import_statement(node)
         elif node.type == "import_from_statement":
             handle_import_from_statement(node)
+        elif node.type == "if_statement" and _is_type_checking_condition(node, source):
+            # `if TYPE_CHECKING:` never executes at runtime (TYPE_CHECKING is always False) -
+            # a common, deliberate idiom for breaking a real circular import while keeping the
+            # name available to static type checkers. Treating these imports the same as real
+            # ones creates edges for dependencies that can never actually run, and can make an
+            # already-broken cycle look unbroken to cycle analysis. Skip only the consequence
+            # block (the `if TYPE_CHECKING:` body itself) - an `elif`/`else` branch always
+            # executes at runtime regardless of TYPE_CHECKING, so still walk into those.
+            consequence = node.child_by_field_name("consequence")
+            for c in node.children:
+                if c != consequence:
+                    walk(c)
+            return
         for c in node.children:
             walk(c)
 
