@@ -1,6 +1,6 @@
 # --- Parsing code into meaningful chunks (functions/classes) ---
 tree-sitter==0.23.2
-tree-sitter-python==0.23.6
+tree-sitter-python==0.25.0
 # tree-sitter-languages is incompatible with tree-sitter>=0.22 (old grammar-loading API,
 # see https://github.com/grantjenks/py-tree-sitter-languages) - using separate grammar
 # packages built on the new PyCapsule-based API instead, same as tree-sitter-python above
