@@ -11,7 +11,7 @@ tree-sitter-c==0.23.2
 tree-sitter-cpp==0.23.4
 
 # --- Embedding model for semantic search ---
-sentence-transformers==3.0.1
+sentence-transformers==5.6.1
 # CPU-only models (bge-small, e5-*, bge-m3) work fine on plain torch==2.3.1+cpu.
 # On a machine with an NVIDIA GPU you can install a CUDA build - the code detects CUDA
 # on its own (torch.cuda.is_available()) and silently uses it if present; without a GPU,
