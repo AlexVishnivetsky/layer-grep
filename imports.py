@@ -29,7 +29,7 @@ IMPORT_VERSION_GROUPS: dict[str, frozenset[str]] = {
 # split finer-grained here since import resolution is genuinely independent per language
 # (unlike chunking, where every language shares the exact same chunk_file() call site).
 IMPORTS_VERSIONS: dict[str, int] = {
-    "python": 1,
+    "python": 2,  # #50: _resolve_from_names now also matches a subpackage, not just a file
     "js_ts": 1,
     "rust": 1,
     "c_cpp": 1,
@@ -108,11 +108,19 @@ def _resolve_dotted(parts: list[str], base: Path, project_root: Path | None = No
 
 def _resolve_from_names(base_dir: Path, names: list[str]) -> Path | None:
     """`from <module> import a, b` where <module> resolved to a package dir: prefer a
-    submodule file matching one of the imported names over the package's __init__.py."""
+    submodule matching one of the imported names - either a sibling FILE (`a.py`) or a
+    sibling SUBPACKAGE (`a/__init__.py`) - over the package's own __init__.py. Missing the
+    subpackage shape (issue #50) silently fell back to the package's own __init__.py,
+    indistinguishable from "no submodule found at all" - found on `from torch import nn`
+    (`torch/nn/` is a real subpackage, not a file) via the layer-discovery research
+    prototype's dotted-attribute resolver, which reuses this same function."""
     for name in names:
         candidate = base_dir / f"{name}.py"
         if candidate.is_file():
             return candidate
+        candidate_pkg = base_dir / name / "__init__.py"
+        if candidate_pkg.is_file():
+            return candidate_pkg
     init_file = base_dir / "__init__.py"
     return init_file if init_file.is_file() else None
 

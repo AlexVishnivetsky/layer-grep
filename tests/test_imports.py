@@ -39,6 +39,19 @@ def test_from_import_falls_back_to_init(tmp_path, write_file):
     assert edges[0].target == tmp_path / "pkg" / "__init__.py"
 
 
+def test_from_import_names_prefers_subpackage_over_init(tmp_path, write_file):
+    # `from pkg import sub` where `sub` is a subPACKAGE (directory + its own __init__.py),
+    # not a sibling .py file - issue #50, this used to fall through to pkg/__init__.py
+    # instead, indistinguishable from "sub" not existing at all.
+    write_file(tmp_path, "pkg/__init__.py", "")
+    write_file(tmp_path, "pkg/sub/__init__.py", "def foo():\n    pass\n")
+    src = write_file(tmp_path, "main.py", "from pkg import sub\n")
+
+    edges = extract_python_imports(src, tmp_path)
+    assert len(edges) == 1
+    assert edges[0].target == tmp_path / "pkg" / "sub" / "__init__.py"
+
+
 def test_relative_import_single_dot(tmp_path, write_file):
     write_file(tmp_path, "pkg/__init__.py", "")
     write_file(tmp_path, "pkg/sibling.py", "def bar():\n    pass\n")
